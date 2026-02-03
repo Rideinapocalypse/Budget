@@ -26,7 +26,7 @@ h3 {margin-top: 0.4rem;}
 )
 
 # ============================
-# Month constants
+# Constants
 # ============================
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -35,30 +35,142 @@ default_langs = ["DE", "EN", "TR", "FR", "IT", "NL"]
 default_roles = ["Team Manager", "QA", "Ops", "Trainer", "RTA/WFM"]
 
 # ============================
-# Helper functions
+# Helpers
 # ============================
 def fmt0(x: float) -> str:
     return f"{x:,.0f}"
 
-def get_val(key: str, default=0.0):
-    return st.session_state.get(key, default)
-
 def normalize_month(m):
-    m = str(m).strip()
+    """Accept Jan/January/1..12/Excel dates/timestamps."""
+    if m is None:
+        return None
+    try:
+        if pd.isna(m):
+            return None
+    except Exception:
+        pass
+
+    # datetime-like (Timestamp)
+    try:
+        if hasattr(m, "month"):
+            mn = int(m.month)
+            if 1 <= mn <= 12:
+                return MONTHS[mn - 1]
+    except Exception:
+        pass
+
+    # numeric month
+    try:
+        if isinstance(m, (int, float)) and 1 <= int(m) <= 12:
+            return MONTHS[int(m) - 1]
+    except Exception:
+        pass
+
+    s = str(m).strip()
+    full_to_short = {
+        "january": "Jan", "february": "Feb", "march": "Mar", "april": "Apr",
+        "may": "May", "june": "Jun", "july": "Jul", "august": "Aug",
+        "september": "Sep", "october": "Oct", "november": "Nov", "december": "Dec"
+    }
+    s_lower = s.lower()
+    if s_lower in full_to_short:
+        return full_to_short[s_lower]
+
     mapping = {x.lower(): x for x in MONTHS}
-    return mapping.get(m.lower(), None)
+    return mapping.get(s_lower, None)
+
+def ensure_storage():
+    """
+    Central truth:
+      st.session_state["data"]["months"][month] = {
+        "inputs": {...},
+        "prod": list of 6 dicts,
+        "oh": list of 5 dicts
+      }
+    """
+    if "data" in st.session_state:
+        return
+
+    st.session_state["data"] = {"months": {}}
+    for m in MONTHS:
+        st.session_state["data"]["months"][m] = {
+            "inputs": {
+                "fx": None,
+                "worked_hours": None,
+                "shrinkage": None,
+            },
+            "prod": [
+                {"lang": default_langs[i], "hc": 0.0, "salary": 0.0, "up": 0.0}
+                for i in range(6)
+            ],
+            "oh": [
+                {"role": default_roles[i], "hc": 0.0, "salary": 0.0}
+                for i in range(5)
+            ],
+        }
+
+def get_month_data(month: str) -> dict:
+    ensure_storage()
+    return st.session_state["data"]["months"][month]
+
+def save_widgets_to_month(month: str):
+    """Save current widget values into central storage for that month."""
+    md = get_month_data(month)
+
+    # month-specific overrides
+    md["inputs"]["fx"] = st.session_state.get("w_fx_month", md["inputs"]["fx"])
+    md["inputs"]["worked_hours"] = st.session_state.get("w_wh_month", md["inputs"]["worked_hours"])
+    md["inputs"]["shrinkage"] = st.session_state.get("w_sh_month", md["inputs"]["shrinkage"])
+
+    # production
+    for i in range(6):
+        md["prod"][i]["lang"] = st.session_state.get(f"w_lang_{i}", md["prod"][i]["lang"])
+        md["prod"][i]["hc"] = float(st.session_state.get(f"w_hc_{i}", md["prod"][i]["hc"]))
+        md["prod"][i]["salary"] = float(st.session_state.get(f"w_sal_{i}", md["prod"][i]["salary"]))
+        md["prod"][i]["up"] = float(st.session_state.get(f"w_up_{i}", md["prod"][i]["up"]))
+
+    # overhead
+    for i in range(5):
+        md["oh"][i]["role"] = st.session_state.get(f"w_role_{i}", md["oh"][i]["role"])
+        md["oh"][i]["hc"] = float(st.session_state.get(f"w_oh_hc_{i}", md["oh"][i]["hc"]))
+        md["oh"][i]["salary"] = float(st.session_state.get(f"w_oh_sal_{i}", md["oh"][i]["salary"]))
+
+def load_month_to_widgets(month: str, defaults: dict):
+    """Load month data into widgets (this makes month switching visibly change inputs)."""
+    md = get_month_data(month)
+
+    # inputs
+    fx = md["inputs"]["fx"] if md["inputs"]["fx"] is not None else defaults["fx_default"]
+    wh = md["inputs"]["worked_hours"] if md["inputs"]["worked_hours"] is not None else defaults["wh_default"]
+    sh = md["inputs"]["shrinkage"] if md["inputs"]["shrinkage"] is not None else defaults["sh_default"]
+
+    st.session_state["w_fx_month"] = float(fx)
+    st.session_state["w_wh_month"] = float(wh)
+    st.session_state["w_sh_month"] = float(sh)
+
+    # prod
+    for i in range(6):
+        st.session_state[f"w_lang_{i}"] = md["prod"][i]["lang"]
+        st.session_state[f"w_hc_{i}"] = float(md["prod"][i]["hc"])
+        st.session_state[f"w_sal_{i}"] = float(md["prod"][i]["salary"])
+        st.session_state[f"w_up_{i}"] = float(md["prod"][i]["up"])
+
+    # oh
+    for i in range(5):
+        st.session_state[f"w_role_{i}"] = md["oh"][i]["role"]
+        st.session_state[f"w_oh_hc_{i}"] = float(md["oh"][i]["hc"])
+        st.session_state[f"w_oh_sal_{i}"] = float(md["oh"][i]["salary"])
 
 # ============================
-# GLOBAL INPUTS (SIDEBAR)
+# Sidebar defaults (global)
 # ============================
 st.sidebar.header("Global Inputs")
 
-worked_hours_default = st.sidebar.number_input(
+wh_default = st.sidebar.number_input(
     "Worked Hours per Agent (Monthly) [default]",
     value=180.0, step=1.0, min_value=0.0
 )
-
-shrinkage_default = st.sidebar.slider(
+sh_default = st.sidebar.slider(
     "Shrinkage (%) [default]",
     min_value=0.0, max_value=0.5, value=0.15, step=0.01
 )
@@ -66,9 +178,7 @@ shrinkage_default = st.sidebar.slider(
 st.sidebar.divider()
 st.sidebar.subheader("Global Cost Drivers")
 
-salary_multiplier = st.sidebar.number_input(
-    "Salary Multiplier", value=1.70, step=0.05, min_value=0.0
-)
+salary_multiplier = st.sidebar.number_input("Salary Multiplier", value=1.70, step=0.05, min_value=0.0)
 
 bonus_pct = st.sidebar.number_input(
     "Bonus % (of Base Salary)", value=0.10, step=0.01, min_value=0.0, max_value=5.0
@@ -84,18 +194,43 @@ meal_card = st.sidebar.number_input(
 
 st.sidebar.divider()
 currency = st.sidebar.selectbox("Unit Price Currency", ["EUR", "USD"])
-
-fx_rate_default = st.sidebar.number_input(
+fx_default = st.sidebar.number_input(
     f"FX Rate (1 {currency} = TRY) [default]",
     value=38.0 if currency == "EUR" else 35.0,
     step=0.1,
     min_value=0.0
 )
 
+defaults_pack = {"wh_default": wh_default, "sh_default": sh_default, "fx_default": fx_default}
+
+# ============================
+# Month selection + controlled save/load
+# ============================
 st.sidebar.divider()
 st.sidebar.subheader("Month Filter")
 
-selected_month = st.sidebar.selectbox("Select Month", MONTHS, index=0)
+ensure_storage()
+
+if "selected_month" not in st.session_state:
+    st.session_state["selected_month"] = MONTHS[0]
+if "prev_month" not in st.session_state:
+    st.session_state["prev_month"] = st.session_state["selected_month"]
+
+def on_month_change():
+    prev = st.session_state.get("prev_month", MONTHS[0])
+    new = st.session_state.get("selected_month", MONTHS[0])
+    # Save current widgets -> prev month
+    save_widgets_to_month(prev)
+    # Load new month -> widgets
+    load_month_to_widgets(new, defaults_pack)
+    st.session_state["prev_month"] = new
+
+st.sidebar.selectbox(
+    "Select Month",
+    MONTHS,
+    key="selected_month",
+    on_change=on_month_change
+)
 
 view_mode = st.sidebar.radio(
     "View",
@@ -103,75 +238,188 @@ view_mode = st.sidebar.radio(
     index=0
 )
 
-# Effective month inputs (optional per-month overrides from Excel import)
-worked_hours_effective = float(st.session_state.get(f"{selected_month}_worked_hours", worked_hours_default))
-shrinkage_effective = float(st.session_state.get(f"{selected_month}_shrinkage", shrinkage_default))
-productive_hours_effective = worked_hours_effective * (1 - shrinkage_effective)
-fx_rate_effective = float(st.session_state.get(f"{selected_month}_fx", fx_rate_default))
+# first-time load for initial month
+if st.session_state.get("_widgets_loaded") != st.session_state["selected_month"]:
+    load_month_to_widgets(st.session_state["selected_month"], defaults_pack)
+    st.session_state["_widgets_loaded"] = st.session_state["selected_month"]
+    st.session_state["prev_month"] = st.session_state["selected_month"]
 
-st.sidebar.caption(f"Effective FX for {selected_month}: {fx_rate_effective:,.2f} TRY/{currency}")
+selected_month = st.session_state["selected_month"]
 
-def try_from_currency(amount_in_currency: float) -> float:
-    return amount_in_currency * fx_rate_effective
-
+# ============================
+# Core calcs
+# ============================
 def calculate_agent_cost(base_salary_try: float) -> float:
-    """
-    Fully loaded monthly cost per head in TRY:
-    (base_salary + base_salary*bonus_pct*bonus_multiplier) * salary_multiplier + meal_card
-    """
     bonus = base_salary_try * bonus_pct * bonus_multiplier
     gross = base_salary_try + bonus
     loaded = gross * salary_multiplier
     return loaded + meal_card
 
+def compute_from_month_store(month: str):
+    md = get_month_data(month)
+
+    fx = md["inputs"]["fx"] if md["inputs"]["fx"] is not None else fx_default
+    wh = md["inputs"]["worked_hours"] if md["inputs"]["worked_hours"] is not None else wh_default
+    sh = md["inputs"]["shrinkage"] if md["inputs"]["shrinkage"] is not None else sh_default
+    prod_hours = wh * (1 - sh)
+
+    def try_from_currency_month(x: float) -> float:
+        return x * float(fx)
+
+    # Production
+    prod_rows = []
+    total_prod_cost = 0.0
+    total_revenue = 0.0
+
+    for i in range(6):
+        row = md["prod"][i]
+        lang = row["lang"]
+        hc = float(row["hc"])
+        salary = float(row["salary"])
+        up_cur = float(row["up"])
+
+        up_try = try_from_currency_month(up_cur)
+        cost_per = calculate_agent_cost(salary)
+        total_cost = hc * cost_per
+        revenue = hc * prod_hours * up_try
+        margin = revenue - total_cost
+
+        total_prod_cost += total_cost
+        total_revenue += revenue
+
+        prod_rows.append({
+            "Month": month,
+            "Language": lang,
+            "HC": hc,
+            "Base Salary (TRY)": salary,
+            f"Unit Price ({currency})": up_cur,
+            "FX Rate": float(fx),
+            "Worked Hours": float(wh),
+            "Shrinkage": float(sh),
+            "Productive Hours": float(prod_hours),
+            "Unit Price (TRY)": up_try,
+            "Cost/Agent (TRY)": cost_per,
+            "Total Cost (TRY)": total_cost,
+            "Revenue (TRY)": revenue,
+            "Margin (TRY)": margin,
+            "Bonus %": bonus_pct,
+            "Bonus Multiplier": bonus_multiplier,
+            "Salary Multiplier": salary_multiplier,
+            "Meal Card (TRY)": meal_card,
+        })
+
+    # Overhead
+    oh_rows = []
+    total_oh = 0.0
+    for i in range(5):
+        row = md["oh"][i]
+        role = row["role"]
+        hc = float(row["hc"])
+        salary = float(row["salary"])
+
+        cost_per = calculate_agent_cost(salary) if hc > 0 else 0.0
+        total_cost = hc * cost_per
+        total_oh += total_cost
+
+        oh_rows.append({
+            "Month": month,
+            "Role": role,
+            "HC": hc,
+            "Base Salary (TRY)": salary,
+            "Cost/Head (TRY)": cost_per,
+            "Total Cost (TRY)": total_cost,
+            "Bonus %": bonus_pct,
+            "Bonus Multiplier": bonus_multiplier,
+            "Salary Multiplier": salary_multiplier,
+            "Meal Card (TRY)": meal_card,
+        })
+
+    grand_cost = total_prod_cost + total_oh
+    grand_margin = total_revenue - grand_cost
+    gm = (grand_margin / total_revenue) if total_revenue > 0 else 0.0
+
+    summary_df = pd.DataFrame([{
+        "Month": month,
+        "Total Production Cost (TRY)": total_prod_cost,
+        "Total Overhead Cost (TRY)": total_oh,
+        "Total Revenue (TRY)": total_revenue,
+        "Grand Total Cost (TRY)": grand_cost,
+        "Grand Margin (TRY)": grand_margin,
+        "GM %": gm
+    }])
+
+    return pd.DataFrame(prod_rows), pd.DataFrame(oh_rows), summary_df
+
 # ============================
-# TEMPLATE + IMPORT (SIDEBAR)
+# Month-level overrides UI (optional but helpful)
+# ============================
+st.subheader("Calculated Values")
+
+# Month-specific inputs displayed and editable (these drive the month calcs)
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Month", selected_month)
+c2.number_input(f"FX for {selected_month} (TRY/{currency})", min_value=0.0, step=0.1, key="w_fx_month")
+c3.number_input(f"Worked Hours for {selected_month}", min_value=0.0, step=1.0, key="w_wh_month")
+c4.slider(f"Shrinkage for {selected_month}", min_value=0.0, max_value=0.5, step=0.01, key="w_sh_month")
+c5.metric("Bonus Mult.", f"{bonus_multiplier:,.2f}")
+
+# Save current widgets to month store on every run (so edits persist)
+save_widgets_to_month(selected_month)
+
+# Recompute for selected month
+prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
+s = summary_df_m.iloc[0]
+
+# ============================
+# Copy month helper
+# ============================
+st.divider()
+with st.expander("📌 Helper: Copy this month to next month", expanded=False):
+    idx = MONTHS.index(selected_month)
+    next_month = MONTHS[idx + 1] if idx < 11 else None
+    if next_month:
+        if st.button(f"Copy {selected_month} → {next_month}"):
+            st.session_state["data"]["months"][next_month] = {
+                "inputs": dict(get_month_data(selected_month)["inputs"]),
+                "prod": [dict(x) for x in get_month_data(selected_month)["prod"]],
+                "oh": [dict(x) for x in get_month_data(selected_month)["oh"]],
+            }
+            st.success(f"Copied {selected_month} values into {next_month}. Switch months to verify.")
+    else:
+        st.info("You're on Dec. No next month to copy into.")
+
+# ============================
+# Excel Template + Import
 # ============================
 st.sidebar.divider()
 st.sidebar.subheader("Excel Import / Template")
 
 def build_template_xlsx() -> bytes:
-    months = MONTHS
-    langs = default_langs
-    roles = default_roles
-
     inputs_df = pd.DataFrame({
-        "Month": months,
-        "FX": [fx_rate_default] * 12,
-        "WorkedHours": [worked_hours_default] * 12,
-        "Shrinkage": [shrinkage_default] * 12,
+        "Month": MONTHS,
+        "FX": [fx_default]*12,
+        "WorkedHours": [wh_default]*12,
+        "Shrinkage": [sh_default]*12,
     })
 
     prod_rows = []
-    for m in months:
-        for l in langs:
-            prod_rows.append({
-                "Month": m,
-                "Language": l,
-                "HC": 0,
-                "BaseSalaryTRY": 0,
-                "UnitPriceCurrency": 0,
-            })
+    for m in MONTHS:
+        for l in default_langs:
+            prod_rows.append({"Month": m, "Language": l, "HC": 0, "BaseSalaryTRY": 0, "UnitPriceCurrency": 0})
     prod_df = pd.DataFrame(prod_rows)
 
     oh_rows = []
-    for m in months:
-        for r in roles:
-            oh_rows.append({
-                "Month": m,
-                "Role": r,
-                "HC": 0,
-                "BaseSalaryTRY": 0,
-            })
+    for m in MONTHS:
+        for r in default_roles:
+            oh_rows.append({"Month": m, "Role": r, "HC": 0, "BaseSalaryTRY": 0})
     oh_df = pd.DataFrame(oh_rows)
 
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as w:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as w:
         inputs_df.to_excel(w, sheet_name="Inputs", index=False)
         prod_df.to_excel(w, sheet_name="Production", index=False)
         oh_df.to_excel(w, sheet_name="Overhead", index=False)
-
-    return output.getvalue()
+    return out.getvalue()
 
 st.sidebar.download_button(
     "⬇️ Download Excel Template",
@@ -180,24 +428,8 @@ st.sidebar.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-# ============================
-# CALCULATED VALUES (compact)
-# ============================
-st.subheader("Calculated Values")
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Month", selected_month)
-c2.metric("Worked Hours", f"{worked_hours_effective:,.2f}")
-c3.metric("Productive Hours", f"{productive_hours_effective:,.2f}")
-c4.metric("Shrinkage", f"{shrinkage_effective*100:.1f}%")
-c5.metric("Bonus Mult.", f"{bonus_multiplier:,.2f}")
-c6.metric("FX (effective)", f"{fx_rate_effective:,.2f}")
-
-# ============================
-# IMPORT UI (main page)
-# ============================
 st.divider()
 st.subheader("Import from Excel")
-
 uploaded = st.file_uploader("Upload filled template (.xlsx)", type=["xlsx"])
 
 def apply_import_xlsx(file):
@@ -211,192 +443,84 @@ def apply_import_xlsx(file):
     prod_df = pd.read_excel(xls, "Production")
     oh_df = pd.read_excel(xls, "Overhead")
 
-    # Inputs: store per-month FX / worked hours / shrinkage overrides
+    # month overrides
     for _, row in inputs_df.iterrows():
         m = normalize_month(row.get("Month"))
         if not m:
             continue
+        md = get_month_data(m)
 
         fx = row.get("FX")
         if pd.notna(fx):
-            st.session_state[f"{m}_fx"] = float(fx)
+            md["inputs"]["fx"] = float(fx)
 
         wh = row.get("WorkedHours")
         if pd.notna(wh):
-            st.session_state[f"{m}_worked_hours"] = float(wh)
+            md["inputs"]["worked_hours"] = float(wh)
 
         sh = row.get("Shrinkage")
         if pd.notna(sh):
-            st.session_state[f"{m}_shrinkage"] = float(sh)
+            shv = float(sh)
+            if shv > 1:
+                shv = shv / 100.0  # fix 15 -> 0.15
+            md["inputs"]["shrinkage"] = shv
 
-    # Production: map by language -> index
-    lang_to_idx = {default_langs[i].strip(): i for i in range(6)}
-
+    # production
+    lang_to_idx = {x.upper(): i for i, x in enumerate(default_langs)}
     for _, row in prod_df.iterrows():
         m = normalize_month(row.get("Month"))
         if not m:
             continue
-
-        lang = str(row.get("Language", "")).strip()
+        lang = str(row.get("Language", "")).strip().upper()
         if lang not in lang_to_idx:
             continue
         i = lang_to_idx[lang]
+        md = get_month_data(m)
 
-        hc = row.get("HC")
-        sal = row.get("BaseSalaryTRY")
-        up = row.get("UnitPriceCurrency")
+        if pd.notna(row.get("HC")):
+            md["prod"][i]["hc"] = float(row.get("HC"))
+        if pd.notna(row.get("BaseSalaryTRY")):
+            md["prod"][i]["salary"] = float(row.get("BaseSalaryTRY"))
+        if pd.notna(row.get("UnitPriceCurrency")):
+            md["prod"][i]["up"] = float(row.get("UnitPriceCurrency"))
 
-        if pd.notna(hc):
-            st.session_state[f"{m}_hc_{i}"] = float(hc)
-        if pd.notna(sal):
-            st.session_state[f"{m}_salary_{i}"] = float(sal)
-        if pd.notna(up):
-            st.session_state[f"{m}_price_{i}"] = float(up)
+        md["prod"][i]["lang"] = default_langs[i]  # keep canonical
 
-        st.session_state[f"{m}_lang_{i}"] = lang
-
-    # Overhead: map by role -> index
-    role_to_idx = {default_roles[i].strip(): i for i in range(5)}
-
+    # overhead
+    role_to_idx = {x.strip().lower(): i for i, x in enumerate(default_roles)}
     for _, row in oh_df.iterrows():
         m = normalize_month(row.get("Month"))
         if not m:
             continue
-
-        role = str(row.get("Role", "")).strip()
+        role = str(row.get("Role", "")).strip().lower()
         if role not in role_to_idx:
             continue
         i = role_to_idx[role]
+        md = get_month_data(m)
 
-        hc = row.get("HC")
-        sal = row.get("BaseSalaryTRY")
+        if pd.notna(row.get("HC")):
+            md["oh"][i]["hc"] = float(row.get("HC"))
+        if pd.notna(row.get("BaseSalaryTRY")):
+            md["oh"][i]["salary"] = float(row.get("BaseSalaryTRY"))
+        md["oh"][i]["role"] = default_roles[i]  # keep canonical
 
-        if pd.notna(hc):
-            st.session_state[f"{m}_oh_hc_{i}"] = float(hc)
-        if pd.notna(sal):
-            st.session_state[f"{m}_oh_salary_{i}"] = float(sal)
-
-        st.session_state[f"{m}_oh_role_{i}"] = role
+    # After import, reload current month into widgets so user immediately sees correct values
+    load_month_to_widgets(selected_month, defaults_pack)
 
 if uploaded is not None:
-    a, b = st.columns([1, 2])
-    with a:
-        if st.button("✅ Apply import to app inputs"):
+    colA, colB = st.columns([1, 2])
+    with colA:
+        if st.button("✅ Apply import"):
             try:
                 apply_import_xlsx(uploaded)
-                st.success("Imported! Switch months in the sidebar to confirm values loaded.")
+                st.success("Imported successfully. Switch months to see different values.")
             except Exception as e:
                 st.error(f"Import failed: {e}")
-    with b:
-        st.info("Tip: If a month isn't filled in Excel, it will remain as-is (often zero) in the app.")
+    with colB:
+        st.info("Tip: Month column can be Jan/January/1..12 or an Excel date.")
 
 # ============================
-# CORE COMPUTE (per month)
-# ============================
-def compute_for_month(month: str):
-    # Use month-specific overrides if present, otherwise fall back to defaults
-    wh = float(st.session_state.get(f"{month}_worked_hours", worked_hours_default))
-    sh = float(st.session_state.get(f"{month}_shrinkage", shrinkage_default))
-    prod_hours = wh * (1 - sh)
-    fx = float(st.session_state.get(f"{month}_fx", fx_rate_default))
-
-    def try_from_currency_month(amount_in_currency: float) -> float:
-        return amount_in_currency * fx
-
-    total_prod_cost = 0.0
-    total_revenue = 0.0
-    prod_rows = []
-
-    # Production
-    for i in range(6):
-        lang_key = f"{month}_lang_{i}"
-        hc_key = f"{month}_hc_{i}"
-        salary_key = f"{month}_salary_{i}"
-        price_key = f"{month}_price_{i}"
-
-        lang = get_val(lang_key, default_langs[i])
-        hc = float(get_val(hc_key, 0.0))
-        salary = float(get_val(salary_key, 0.0))
-        unit_price_cur = float(get_val(price_key, 0.0))
-
-        unit_price_try = try_from_currency_month(unit_price_cur)
-        cost_per_agent = calculate_agent_cost(salary)
-        cost_total = hc * cost_per_agent
-        revenue = hc * prod_hours * unit_price_try
-        margin = revenue - cost_total
-
-        total_prod_cost += cost_total
-        total_revenue += revenue
-
-        prod_rows.append({
-            "Month": month,
-            "Language": lang,
-            "HC": hc,
-            "Base Salary (TRY)": salary,
-            f"Unit Price ({currency})": unit_price_cur,
-            "FX Rate": fx,
-            "Worked Hours": wh,
-            "Shrinkage": sh,
-            "Productive Hours": prod_hours,
-            "Unit Price (TRY)": unit_price_try,
-            "Cost/Agent (TRY)": cost_per_agent,
-            "Total Cost (TRY)": cost_total,
-            "Revenue (TRY)": revenue,
-            "Margin (TRY)": margin,
-            "Bonus %": bonus_pct,
-            "Bonus Multiplier": bonus_multiplier,
-            "Salary Multiplier": salary_multiplier,
-            "Meal Card (TRY)": meal_card,
-        })
-
-    # Overhead
-    total_overhead = 0.0
-    oh_rows = []
-
-    for i in range(5):
-        role_key = f"{month}_oh_role_{i}"
-        oh_hc_key = f"{month}_oh_hc_{i}"
-        oh_salary_key = f"{month}_oh_salary_{i}"
-
-        role = get_val(role_key, default_roles[i])
-        oh_hc = float(get_val(oh_hc_key, 0.0))
-        oh_salary = float(get_val(oh_salary_key, 0.0))
-
-        oh_cost_per = calculate_agent_cost(oh_salary) if oh_hc > 0 else 0.0
-        oh_cost_total = oh_hc * oh_cost_per
-        total_overhead += oh_cost_total
-
-        oh_rows.append({
-            "Month": month,
-            "Role": role,
-            "HC": oh_hc,
-            "Base Salary (TRY)": oh_salary,
-            "Cost/Head (TRY)": oh_cost_per,
-            "Total Cost (TRY)": oh_cost_total,
-            "Bonus %": bonus_pct,
-            "Bonus Multiplier": bonus_multiplier,
-            "Salary Multiplier": salary_multiplier,
-            "Meal Card (TRY)": meal_card,
-        })
-
-    grand_cost = total_prod_cost + total_overhead
-    grand_margin = total_revenue - grand_cost
-    gm_pct = (grand_margin / total_revenue) if total_revenue > 0 else 0.0
-
-    summary = {
-        "Month": month,
-        "Total Production Cost (TRY)": total_prod_cost,
-        "Total Overhead Cost (TRY)": total_overhead,
-        "Total Revenue (TRY)": total_revenue,
-        "Grand Total Cost (TRY)": grand_cost,
-        "Grand Margin (TRY)": grand_margin,
-        "GM %": gm_pct,
-    }
-
-    return pd.DataFrame(prod_rows), pd.DataFrame(oh_rows), pd.DataFrame([summary])
-
-# ============================
-# INPUT UI (Selected Month)
+# Production Blocks UI
 # ============================
 st.divider()
 st.subheader("Production Blocks")
@@ -404,35 +528,18 @@ st.subheader("Production Blocks")
 for i in range(6):
     with st.expander(f"#{i+1} Production — {default_langs[i]}  ({selected_month})", expanded=(i == 0)):
         col1, col2, col3, col4 = st.columns(4)
-
         with col1:
-            st.text_input(
-                f"Language Label #{i+1}",
-                value=get_val(f"{selected_month}_lang_{i}", default_langs[i]),
-                key=f"{selected_month}_lang_{i}",
-            )
+            st.text_input(f"Language Label #{i+1}", key=f"w_lang_{i}")
         with col2:
-            st.number_input(
-                f"HC ({default_langs[i]})",
-                min_value=0.0,
-                step=1.0,
-                key=f"{selected_month}_hc_{i}",
-            )
+            st.number_input("HC", min_value=0.0, step=1.0, key=f"w_hc_{i}")
         with col3:
-            st.number_input(
-                f"Base Salary ({default_langs[i]}) TRY",
-                min_value=0.0,
-                step=500.0,
-                key=f"{selected_month}_salary_{i}",
-            )
+            st.number_input("Base Salary (TRY)", min_value=0.0, step=500.0, key=f"w_sal_{i}")
         with col4:
-            st.number_input(
-                f"Unit Price ({default_langs[i]}) in {currency}",
-                min_value=0.0,
-                step=0.1,
-                key=f"{selected_month}_price_{i}",
-            )
+            st.number_input(f"Unit Price ({currency})", min_value=0.0, step=0.1, key=f"w_up_{i}")
 
+# ============================
+# Overhead UI
+# ============================
 st.divider()
 st.subheader("Overhead")
 
@@ -440,35 +547,23 @@ for i in range(5):
     with st.expander(f"Overhead #{i+1}  ({selected_month})", expanded=(i == 0)):
         oh1, oh2, oh3 = st.columns(3)
         with oh1:
-            st.text_input(
-                f"Role #{i+1}",
-                value=get_val(f"{selected_month}_oh_role_{i}", default_roles[i]),
-                key=f"{selected_month}_oh_role_{i}",
-            )
+            st.text_input("Role", key=f"w_role_{i}")
         with oh2:
-            st.number_input(
-                "OH HC",
-                min_value=0.0,
-                step=1.0,
-                key=f"{selected_month}_oh_hc_{i}",
-            )
+            st.number_input("OH HC", min_value=0.0, step=1.0, key=f"w_oh_hc_{i}")
         with oh3:
-            st.number_input(
-                "Base Salary (TRY)",
-                min_value=0.0,
-                step=500.0,
-                key=f"{selected_month}_oh_salary_{i}",
-            )
+            st.number_input("Base Salary (TRY)", min_value=0.0, step=500.0, key=f"w_oh_sal_{i}")
+
+# Save edits and recompute again (important after UI widgets)
+save_widgets_to_month(selected_month)
+prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
+s = summary_df_m.iloc[0]
 
 # ============================
-# COMPUTE Selected Month
+# Final Summary
 # ============================
-prod_df_m, oh_df_m, summary_df_m = compute_for_month(selected_month)
-
 st.divider()
 st.subheader("Final Summary")
 
-s = summary_df_m.iloc[0]
 s1, s2, s3, s4 = st.columns(4)
 s1.metric("Total Production Cost (TRY)", fmt0(s["Total Production Cost (TRY)"]))
 s2.metric("Total Overhead Cost (TRY)", fmt0(s["Total Overhead Cost (TRY)"]))
@@ -478,10 +573,10 @@ s4.metric("GM %", f"{s['GM %']*100:.1f}%")
 t1, t2, t3 = st.columns(3)
 t1.metric("Grand Total Cost (TRY)", fmt0(s["Grand Total Cost (TRY)"]))
 t2.metric("Grand Margin (TRY)", fmt0(s["Grand Margin (TRY)"]))
-t3.metric("Currency + FX", f"{currency} @ {fx_rate_effective:,.2f} TRY")
+t3.metric("Currency + FX", f"{currency} @ {get_month_data(selected_month)['inputs']['fx'] or fx_default:,.2f} TRY")
 
 # ============================
-# SUMMARY GRAPHICS
+# Charts
 # ============================
 st.divider()
 st.subheader("Summary Graphics")
@@ -495,11 +590,10 @@ st.bar_chart(summary_bar)
 gm_df = pd.DataFrame({"GM%": [s["GM %"] * 100.0]}, index=["GM %"])
 st.bar_chart(gm_df)
 
-# Trend view across months
 if view_mode == "All Months (Trend)":
     all_sum = []
     for m in MONTHS:
-        _, _, sm = compute_for_month(m)
+        _, _, sm = compute_from_month_store(m)
         all_sum.append(sm)
     all_sum_df = pd.concat(all_sum, ignore_index=True)
 
@@ -511,7 +605,7 @@ if view_mode == "All Months (Trend)":
     st.line_chart(gm_trend)
 
 # ============================
-# TABLES
+# Tables
 # ============================
 with st.expander("Show detailed tables (Selected Month)"):
     st.markdown("#### Production")
@@ -520,7 +614,7 @@ with st.expander("Show detailed tables (Selected Month)"):
     st.dataframe(oh_df_m, use_container_width=True)
 
 # ============================
-# EXCEL EXPORT
+# Export
 # ============================
 st.divider()
 st.subheader("Export")
@@ -528,15 +622,14 @@ st.subheader("Export")
 def build_excel_export() -> bytes:
     inputs_df = pd.DataFrame([{
         "Selected Month": selected_month,
-        "Worked Hours (effective)": worked_hours_effective,
-        "Shrinkage (effective)": shrinkage_effective,
-        "Productive Hours (effective)": productive_hours_effective,
+        "Worked Hours (default)": wh_default,
+        "Shrinkage (default)": sh_default,
         "Salary Multiplier": salary_multiplier,
         "Bonus %": bonus_pct,
         "Bonus Multiplier": bonus_multiplier,
         "Meal Card (TRY)": meal_card,
         "Currency": currency,
-        "FX Rate (effective)": fx_rate_effective,
+        "FX (default)": fx_default,
     }])
 
     # Selected month sheets
@@ -545,19 +638,19 @@ def build_excel_export() -> bytes:
     # All months summary
     all_sum = []
     for m in MONTHS:
-        _, _, sm = compute_for_month(m)
+        _, _, sm = compute_from_month_store(m)
         all_sum.append(sm)
     all_months_summary_df = pd.concat(all_sum, ignore_index=True)
 
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
         inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
         prod_df_m.to_excel(writer, sheet_name=f"Prod_{selected_month}", index=False)
         oh_df_m.to_excel(writer, sheet_name=f"OH_{selected_month}", index=False)
         sel_summary.to_excel(writer, sheet_name=f"Summary_{selected_month}", index=False)
         all_months_summary_df.to_excel(writer, sheet_name="Summary_AllMonths", index=False)
 
-    return output.getvalue()
+    return out.getvalue()
 
 excel_bytes = build_excel_export()
 
