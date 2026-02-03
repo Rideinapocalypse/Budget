@@ -220,8 +220,6 @@ def on_month_change():
     prev = st.session_state.get("prev_month", MONTHS[0])
     new = st.session_state.get("selected_month", MONTHS[0])
     save_widgets_to_month(prev)
-
-    # Safe: mark pending reload; do NOT set widget keys here (widgets may already exist)
     st.session_state["pending_reload_month"] = new
     st.session_state["prev_month"] = new
     st.rerun()
@@ -511,7 +509,7 @@ def apply_import_xlsx(file):
             md["oh"][i]["salary"] = float(row.get("BaseSalaryTRY"))
         md["oh"][i]["role"] = default_roles[i]  # keep canonical
 
-    # Trigger safe reload (do NOT set widget keys directly here)
+    # Trigger safe reload
     st.session_state["pending_reload_month"] = selected_month
 
 if uploaded is not None:
@@ -572,6 +570,17 @@ s = summary_df_m.iloc[0]
 st.divider()
 st.subheader("Final Summary")
 
+# --- NEW: Selected Month Revenue (very clear) ---
+st.markdown("### 📌 Selected Month Revenue")
+fx_effective = get_month_data(selected_month)["inputs"]["fx"] if get_month_data(selected_month)["inputs"]["fx"] is not None else fx_default
+total_rev_try = float(s["Total Revenue (TRY)"])
+total_rev_cur = total_rev_try / float(fx_effective) if fx_effective > 0 else 0.0
+r1, r2, r3 = st.columns(3)
+r1.metric(f"Revenue ({selected_month}) — TRY", fmt0(total_rev_try))
+r2.metric(f"Revenue ({selected_month}) — {currency}", f"{total_rev_cur:,.0f}")
+r3.metric(f"FX used ({selected_month})", f"{fx_effective:,.2f} TRY/{currency}")
+
+# --- Original summary metrics ---
 s1, s2, s3, s4 = st.columns(4)
 s1.metric("Total Production Cost (TRY)", fmt0(s["Total Production Cost (TRY)"]))
 s2.metric("Total Overhead Cost (TRY)", fmt0(s["Total Overhead Cost (TRY)"]))
@@ -581,8 +590,16 @@ s4.metric("GM %", f"{s['GM %']*100:.1f}%")
 t1, t2, t3 = st.columns(3)
 t1.metric("Grand Total Cost (TRY)", fmt0(s["Grand Total Cost (TRY)"]))
 t2.metric("Grand Margin (TRY)", fmt0(s["Grand Margin (TRY)"]))
-fx_effective = get_month_data(selected_month)["inputs"]["fx"] if get_month_data(selected_month)["inputs"]["fx"] is not None else fx_default
 t3.metric("Currency + FX", f"{currency} @ {fx_effective:,.2f} TRY")
+
+# --- NEW: Revenue breakdown by language ---
+st.markdown("### Revenue breakdown by language (Selected Month)")
+rev_by_lang = (
+    prod_df_m.groupby("Language", as_index=False)[["Revenue (TRY)", "Total Cost (TRY)", "Margin (TRY)"]]
+    .sum()
+    .sort_values("Revenue (TRY)", ascending=False)
+)
+st.dataframe(rev_by_lang, use_container_width=True)
 
 # ============================
 # Charts
