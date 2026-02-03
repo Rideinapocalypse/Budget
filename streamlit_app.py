@@ -136,10 +136,12 @@ def save_widgets_to_month(month: str):
         md["oh"][i]["salary"] = float(st.session_state.get(f"w_oh_sal_{i}", md["oh"][i]["salary"]))
 
 def load_month_to_widgets(month: str, defaults: dict):
-    """Load month data into widgets (this makes month switching visibly change inputs)."""
+    """
+    Load month data into session_state widget keys BEFORE widgets are created.
+    Do NOT call this after widgets exist in the same run.
+    """
     md = get_month_data(month)
 
-    # inputs
     fx = md["inputs"]["fx"] if md["inputs"]["fx"] is not None else defaults["fx_default"]
     wh = md["inputs"]["worked_hours"] if md["inputs"]["worked_hours"] is not None else defaults["wh_default"]
     sh = md["inputs"]["shrinkage"] if md["inputs"]["shrinkage"] is not None else defaults["sh_default"]
@@ -148,14 +150,12 @@ def load_month_to_widgets(month: str, defaults: dict):
     st.session_state["w_wh_month"] = float(wh)
     st.session_state["w_sh_month"] = float(sh)
 
-    # prod
     for i in range(6):
         st.session_state[f"w_lang_{i}"] = md["prod"][i]["lang"]
         st.session_state[f"w_hc_{i}"] = float(md["prod"][i]["hc"])
         st.session_state[f"w_sal_{i}"] = float(md["prod"][i]["salary"])
         st.session_state[f"w_up_{i}"] = float(md["prod"][i]["up"])
 
-    # oh
     for i in range(5):
         st.session_state[f"w_role_{i}"] = md["oh"][i]["role"]
         st.session_state[f"w_oh_hc_{i}"] = float(md["oh"][i]["hc"])
@@ -219,11 +219,12 @@ if "prev_month" not in st.session_state:
 def on_month_change():
     prev = st.session_state.get("prev_month", MONTHS[0])
     new = st.session_state.get("selected_month", MONTHS[0])
-    # Save current widgets -> prev month
     save_widgets_to_month(prev)
-    # Load new month -> widgets
-    load_month_to_widgets(new, defaults_pack)
+
+    # Safe: mark pending reload; do NOT set widget keys here (widgets may already exist)
+    st.session_state["pending_reload_month"] = new
     st.session_state["prev_month"] = new
+    st.rerun()
 
 st.sidebar.selectbox(
     "Select Month",
@@ -238,13 +239,22 @@ view_mode = st.sidebar.radio(
     index=0
 )
 
-# first-time load for initial month
-if st.session_state.get("_widgets_loaded") != st.session_state["selected_month"]:
-    load_month_to_widgets(st.session_state["selected_month"], defaults_pack)
-    st.session_state["_widgets_loaded"] = st.session_state["selected_month"]
-    st.session_state["prev_month"] = st.session_state["selected_month"]
-
 selected_month = st.session_state["selected_month"]
+
+# ============================
+# Handle pending reload BEFORE widgets exist
+# ============================
+if st.session_state.get("pending_reload_month"):
+    m = st.session_state.pop("pending_reload_month")
+    load_month_to_widgets(m, defaults_pack)
+    st.session_state["_widgets_loaded"] = m
+    st.session_state["prev_month"] = m
+
+# first-time load
+if st.session_state.get("_widgets_loaded") != selected_month:
+    load_month_to_widgets(selected_month, defaults_pack)
+    st.session_state["_widgets_loaded"] = selected_month
+    st.session_state["prev_month"] = selected_month
 
 # ============================
 # Core calcs
@@ -266,7 +276,6 @@ def compute_from_month_store(month: str):
     def try_from_currency_month(x: float) -> float:
         return x * float(fx)
 
-    # Production
     prod_rows = []
     total_prod_cost = 0.0
     total_revenue = 0.0
@@ -308,7 +317,6 @@ def compute_from_month_store(month: str):
             "Meal Card (TRY)": meal_card,
         })
 
-    # Overhead
     oh_rows = []
     total_oh = 0.0
     for i in range(5):
@@ -351,11 +359,9 @@ def compute_from_month_store(month: str):
     return pd.DataFrame(prod_rows), pd.DataFrame(oh_rows), summary_df
 
 # ============================
-# Month-level overrides UI (optional but helpful)
+# Month-level overrides UI
 # ============================
 st.subheader("Calculated Values")
-
-# Month-specific inputs displayed and editable (these drive the month calcs)
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Month", selected_month)
 c2.number_input(f"FX for {selected_month} (TRY/{currency})", min_value=0.0, step=0.1, key="w_fx_month")
@@ -363,10 +369,10 @@ c3.number_input(f"Worked Hours for {selected_month}", min_value=0.0, step=1.0, k
 c4.slider(f"Shrinkage for {selected_month}", min_value=0.0, max_value=0.5, step=0.01, key="w_sh_month")
 c5.metric("Bonus Mult.", f"{bonus_multiplier:,.2f}")
 
-# Save current widgets to month store on every run (so edits persist)
+# Save widgets to store each run
 save_widgets_to_month(selected_month)
 
-# Recompute for selected month
+# Compute
 prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
 s = summary_df_m.iloc[0]
 
@@ -384,7 +390,8 @@ with st.expander("📌 Helper: Copy this month to next month", expanded=False):
                 "prod": [dict(x) for x in get_month_data(selected_month)["prod"]],
                 "oh": [dict(x) for x in get_month_data(selected_month)["oh"]],
             }
-            st.success(f"Copied {selected_month} values into {next_month}. Switch months to verify.")
+            st.session_state["pending_reload_month"] = next_month
+            st.rerun()
     else:
         st.info("You're on Dec. No next month to copy into.")
 
@@ -504,8 +511,8 @@ def apply_import_xlsx(file):
             md["oh"][i]["salary"] = float(row.get("BaseSalaryTRY"))
         md["oh"][i]["role"] = default_roles[i]  # keep canonical
 
-    # After import, reload current month into widgets so user immediately sees correct values
-    load_month_to_widgets(selected_month, defaults_pack)
+    # Trigger safe reload (do NOT set widget keys directly here)
+    st.session_state["pending_reload_month"] = selected_month
 
 if uploaded is not None:
     colA, colB = st.columns([1, 2])
@@ -513,11 +520,12 @@ if uploaded is not None:
         if st.button("✅ Apply import"):
             try:
                 apply_import_xlsx(uploaded)
-                st.success("Imported successfully. Switch months to see different values.")
+                st.success("Import applied. Reloading…")
+                st.rerun()
             except Exception as e:
                 st.error(f"Import failed: {e}")
     with colB:
-        st.info("Tip: Month column can be Jan/January/1..12 or an Excel date.")
+        st.info("Tip: Month can be Jan/January/1..12 or an Excel date.")
 
 # ============================
 # Production Blocks UI
@@ -553,7 +561,7 @@ for i in range(5):
         with oh3:
             st.number_input("Base Salary (TRY)", min_value=0.0, step=500.0, key=f"w_oh_sal_{i}")
 
-# Save edits and recompute again (important after UI widgets)
+# Save edits and recompute
 save_widgets_to_month(selected_month)
 prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
 s = summary_df_m.iloc[0]
@@ -573,7 +581,8 @@ s4.metric("GM %", f"{s['GM %']*100:.1f}%")
 t1, t2, t3 = st.columns(3)
 t1.metric("Grand Total Cost (TRY)", fmt0(s["Grand Total Cost (TRY)"]))
 t2.metric("Grand Margin (TRY)", fmt0(s["Grand Margin (TRY)"]))
-t3.metric("Currency + FX", f"{currency} @ {get_month_data(selected_month)['inputs']['fx'] or fx_default:,.2f} TRY")
+fx_effective = get_month_data(selected_month)["inputs"]["fx"] if get_month_data(selected_month)["inputs"]["fx"] is not None else fx_default
+t3.metric("Currency + FX", f"{currency} @ {fx_effective:,.2f} TRY")
 
 # ============================
 # Charts
@@ -632,10 +641,6 @@ def build_excel_export() -> bytes:
         "FX (default)": fx_default,
     }])
 
-    # Selected month sheets
-    sel_summary = summary_df_m.copy()
-
-    # All months summary
     all_sum = []
     for m in MONTHS:
         _, _, sm = compute_from_month_store(m)
@@ -647,7 +652,7 @@ def build_excel_export() -> bytes:
         inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
         prod_df_m.to_excel(writer, sheet_name=f"Prod_{selected_month}", index=False)
         oh_df_m.to_excel(writer, sheet_name=f"OH_{selected_month}", index=False)
-        sel_summary.to_excel(writer, sheet_name=f"Summary_{selected_month}", index=False)
+        summary_df_m.to_excel(writer, sheet_name=f"Summary_{selected_month}", index=False)
         all_months_summary_df.to_excel(writer, sheet_name="Summary_AllMonths", index=False)
 
     return out.getvalue()
