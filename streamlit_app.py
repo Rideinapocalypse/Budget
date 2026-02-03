@@ -34,6 +34,11 @@ bonus_pct = st.sidebar.number_input(
     "Bonus % (of Base Salary)", value=0.10, step=0.01, min_value=0.0, max_value=5.0
 )
 
+# ✅ ADDED: Bonus Multiplier (adjustable like other costs)
+bonus_multiplier = st.sidebar.number_input(
+    "Bonus Multiplier", value=1.00, step=0.05, min_value=0.0
+)
+
 meal_card = st.sidebar.number_input(
     "Meal Card per Agent (Monthly TRY)", value=5850.0, step=100.0, min_value=0.0
 )
@@ -54,9 +59,9 @@ fx_rate = st.sidebar.number_input(
 def calculate_agent_cost(base_salary_try: float) -> float:
     """
     Fully loaded monthly cost per head in TRY:
-    (base_salary + base_salary*bonus_pct) * salary_multiplier + meal_card
+    (base_salary + base_salary*bonus_pct*bonus_multiplier) * salary_multiplier + meal_card
     """
-    bonus = base_salary_try * bonus_pct
+    bonus = base_salary_try * bonus_pct * bonus_multiplier  # ✅ bonus multiplier applied here
     gross = base_salary_try + bonus
     loaded = gross * salary_multiplier
     return loaded + meal_card
@@ -71,10 +76,11 @@ def fmt0(x: float) -> str:
 # CALCULATED VALUES
 # ============================
 st.subheader("Calculated Values")
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Worked Hours / Agent", f"{worked_hours:,.2f}")
 c2.metric("Productive Hours / Agent", f"{productive_hours:,.2f}")
 c3.metric("Shrinkage", f"{shrinkage*100:.1f}%")
+c4.metric("Bonus Multiplier", f"{bonus_multiplier:,.2f}")  # ✅ visible confirmation
 
 # ============================
 # PRODUCTION BLOCKS
@@ -124,6 +130,7 @@ for i in range(6):
         "Shrinkage": shrinkage,
         "Productive Hours": productive_hours,
         "Bonus %": bonus_pct,
+        "Bonus Multiplier": bonus_multiplier,  # ✅ export it
         "Salary Multiplier": salary_multiplier,
         "Meal Card": meal_card,
         "Cost/Agent (TRY)": cost_per_agent,
@@ -181,6 +188,7 @@ for i in range(5):
         "HC": oh_hc,
         "Base Salary (TRY)": oh_salary,
         "Bonus %": bonus_pct,
+        "Bonus Multiplier": bonus_multiplier,  # ✅ export it
         "Salary Multiplier": salary_multiplier,
         "Meal Card": meal_card,
         "Cost/Head (TRY)": oh_cost_per,
@@ -222,21 +230,15 @@ t3.metric("Currency + FX", f"{currency} @ {fx_rate:,.2f} TRY")
 st.divider()
 st.subheader("Summary Graphics")
 
-# Bar chart: Revenue vs Cost vs Margin
 summary_bar = pd.DataFrame(
-    {
-        "TRY": [total_revenue, grand_cost, grand_margin]
-    },
+    {"TRY": [total_revenue, grand_cost, grand_margin]},
     index=["Revenue", "Total Cost", "Margin"]
 )
-
 st.bar_chart(summary_bar)
 
-# GM% chart (single value, but plotted as a bar for quick visuals)
 gm_df = pd.DataFrame({"GM%": [gm_pct * 100.0]}, index=["GM %"])
 st.bar_chart(gm_df)
 
-# Optional: show tables
 with st.expander("Show detailed tables (Production + Overhead)"):
     st.markdown("#### Production Table")
     st.dataframe(prod_df, use_container_width=True)
@@ -250,19 +252,13 @@ st.divider()
 st.subheader("Export")
 
 def build_excel_file() -> bytes:
-    """
-    Creates an .xlsx in memory with:
-      - Inputs
-      - Production
-      - Overhead
-      - Summary
-    """
     inputs_df = pd.DataFrame([{
         "Worked Hours": worked_hours,
         "Shrinkage": shrinkage,
         "Productive Hours": productive_hours,
         "Salary Multiplier": salary_multiplier,
         "Bonus %": bonus_pct,
+        "Bonus Multiplier": bonus_multiplier,  # ✅ export it
         "Meal Card (TRY)": meal_card,
         "Currency": currency,
         "FX Rate": fx_rate,
@@ -278,7 +274,6 @@ def build_excel_file() -> bytes:
     }])
 
     output = BytesIO()
-    # openpyxl is commonly available; Streamlit Cloud usually supports it.
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
         prod_df.to_excel(writer, sheet_name="Production", index=False)
@@ -300,7 +295,7 @@ with st.expander("Show formula details"):
     st.write(
         """
 **Cost per head (TRY)** =
-(base_salary + base_salary×bonus_pct) × salary_multiplier + meal_card
+(base_salary + base_salary×bonus_pct×bonus_multiplier) × salary_multiplier + meal_card
 
 **Revenue (TRY)** =
 HC × productive_hours × (unit_price_in_currency × FX)
