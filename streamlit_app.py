@@ -695,4 +695,44 @@ HC × productive_hours × (unit_price_in_currency × FX)
 **GM%** =
 (Revenue − Total Cost) / Revenue
         """
-    )
+    )# =====================================================
+# Month-over-Month Analysis (SAFE – READ ONLY)
+# =====================================================
+st.divider()
+st.subheader("📊 Month-over-Month Analysis")
+
+# Select comparison month (read-only)
+idx = MONTHS.index(selected_month)
+default_prev = MONTHS[idx - 1] if idx > 0 else MONTHS[0]
+
+compare_month = st.selectbox(
+    "Compare with month",
+    MONTHS,
+    index=MONTHS.index(default_prev),
+    key="mom_compare_month_readonly"
+)
+
+# PURE READ — no writes
+cur_sum = compute_from_month_store(selected_month)[2].iloc[0]
+prev_sum = compute_from_month_store(compare_month)[2].iloc[0]
+
+rev_delta = cur_sum["Total Revenue (TRY)"] - prev_sum["Total Revenue (TRY)"]
+cost_delta = cur_sum["Grand Total Cost (TRY)"] - prev_sum["Grand Total Cost (TRY)"]
+margin_delta = cur_sum["Grand Margin (TRY)"] - prev_sum["Grand Margin (TRY)"]
+gm_delta_pp = (cur_sum["GM %"] - prev_sum["GM %"]) * 100
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Revenue Δ (TRY)", fmt0(rev_delta))
+c2.metric("Cost Δ (TRY)", fmt0(cost_delta))
+c3.metric("Margin Δ (TRY)", fmt0(margin_delta))
+c4.metric("GM Δ (pp)", f"{gm_delta_pp:+.2f}")
+
+bridge_df = pd.DataFrame([
+    {"Driver": "Revenue change", "Impact (TRY)": rev_delta},
+    {"Driver": "Cost change", "Impact (TRY)": -cost_delta},
+    {"Driver": "Net Margin impact", "Impact (TRY)": margin_delta},
+])
+
+st.markdown("### Margin Bridge")
+st.dataframe(bridge_df, use_container_width=True)
+
