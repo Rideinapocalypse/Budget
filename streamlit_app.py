@@ -393,137 +393,144 @@ with st.expander("📌 Helper: Copy this month to next month", expanded=False):
     else:
         st.info("You're on Dec. No next month to copy into.")
 
-# ============================
-# Excel Template + Import
-# ============================
-st.sidebar.divider()
-st.sidebar.subheader("Excel Import / Template")
+# =====================================================
+# Excel Template & Import (Aligned With Current Store)
+# =====================================================
 
-def build_template_xlsx() -> bytes:
-    inputs_df = pd.DataFrame({
-        "Month": MONTHS,
-        "FX": [fx_default]*12,
-        "WorkedHours": [wh_default]*12,
-        "Shrinkage": [sh_default]*12,
-    })
+st.divider()
+st.subheader("Excel Template & Import")
+
+def build_template():
+    inputs_rows = []
+    for m in MONTHS:
+        inputs_rows.append({
+            "Month": m,
+            "FX": fx_default,
+            "WorkedHours": wh_default,
+            "Shrinkage": sh_default
+        })
+    inputs_df = pd.DataFrame(inputs_rows)
 
     prod_rows = []
     for m in MONTHS:
-        for l in default_langs:
-            prod_rows.append({"Month": m, "Language": l, "HC": 0, "BaseSalaryTRY": 0, "UnitPriceCurrency": 0})
+        for lang in default_langs:
+            prod_rows.append({
+                "Month": m,
+                "Language": lang,
+                "HC": 0,
+                "BaseSalaryTRY": 0,
+                "UnitPriceCurrency": 0
+            })
     prod_df = pd.DataFrame(prod_rows)
 
     oh_rows = []
     for m in MONTHS:
-        for r in default_roles:
-            oh_rows.append({"Month": m, "Role": r, "HC": 0, "BaseSalaryTRY": 0})
+        for role in default_roles:
+            oh_rows.append({
+                "Month": m,
+                "Role": role,
+                "HC": 0,
+                "BaseSalaryTRY": 0
+            })
     oh_df = pd.DataFrame(oh_rows)
 
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as w:
-        inputs_df.to_excel(w, sheet_name="Inputs", index=False)
-        prod_df.to_excel(w, sheet_name="Production", index=False)
-        oh_df.to_excel(w, sheet_name="Overhead", index=False)
-    return out.getvalue()
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
+        prod_df.to_excel(writer, sheet_name="Production", index=False)
+        oh_df.to_excel(writer, sheet_name="Overhead", index=False)
 
-st.sidebar.download_button(
-    "⬇️ Download Excel Template",
-    data=build_template_xlsx(),
+    return output.getvalue()
+
+st.download_button(
+    "⬇ Download Excel Template",
+    data=build_template(),
     file_name="budget_template.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-st.divider()
-st.subheader("Import from Excel")
-uploaded = st.file_uploader("Upload filled template (.xlsx)", type=["xlsx"])
+uploaded = st.file_uploader("Upload Filled Template (.xlsx)", type=["xlsx"])
 
-def apply_import_xlsx(file):
+def apply_import(file):
     xls = pd.ExcelFile(file)
-    required = {"Inputs", "Production", "Overhead"}
-    if not required.issubset(set(xls.sheet_names)):
-        missing = required - set(xls.sheet_names)
-        raise ValueError(f"Missing sheet(s): {', '.join(missing)}")
 
     inputs_df = pd.read_excel(xls, "Inputs")
     prod_df = pd.read_excel(xls, "Production")
     oh_df = pd.read_excel(xls, "Overhead")
 
-    # month overrides
+    # Inputs
     for _, row in inputs_df.iterrows():
-        m = normalize_month(row.get("Month"))
-        if not m:
-            continue
-        md = get_month_data(m)
+        m = normalize_month(row["Month"])
+        if m:
+            md = st.session_state["data"]["months"][m]
 
-        fx = row.get("FX")
-        if pd.notna(fx):
-            md["inputs"]["fx"] = float(fx)
+            if pd.notna(row.get("FX")):
+                md["inputs"]["fx"] = float(row["FX"])
 
-        wh = row.get("WorkedHours")
-        if pd.notna(wh):
-            md["inputs"]["worked_hours"] = float(wh)
+            if pd.notna(row.get("WorkedHours")):
+                md["inputs"]["worked_hours"] = float(row["WorkedHours"])
 
-        sh = row.get("Shrinkage")
-        if pd.notna(sh):
-            shv = float(sh)
-            if shv > 1:
-                shv = shv / 100.0  # fix 15 -> 0.15
-            md["inputs"]["shrinkage"] = shv
+            if pd.notna(row.get("Shrinkage")):
+                val = float(row["Shrinkage"])
+                if val > 1:
+                    val = val / 100
+                md["inputs"]["shrinkage"] = val
 
-    # production
-    lang_to_idx = {x.upper(): i for i, x in enumerate(default_langs)}
+    # Production
+    lang_map = {x.upper(): i for i, x in enumerate(default_langs)}
+
     for _, row in prod_df.iterrows():
-        m = normalize_month(row.get("Month"))
+        m = normalize_month(row["Month"])
         if not m:
             continue
-        lang = str(row.get("Language", "")).strip().upper()
-        if lang not in lang_to_idx:
+
+        lang = str(row["Language"]).strip().upper()
+        if lang not in lang_map:
             continue
-        i = lang_to_idx[lang]
-        md = get_month_data(m)
+
+        i = lang_map[lang]
+        md = st.session_state["data"]["months"][m]
 
         if pd.notna(row.get("HC")):
-            md["prod"][i]["hc"] = float(row.get("HC"))
+            md["prod"][i]["hc"] = float(row["HC"])
+
         if pd.notna(row.get("BaseSalaryTRY")):
-            md["prod"][i]["salary"] = float(row.get("BaseSalaryTRY"))
+            md["prod"][i]["salary"] = float(row["BaseSalaryTRY"])
+
         if pd.notna(row.get("UnitPriceCurrency")):
-            md["prod"][i]["up"] = float(row.get("UnitPriceCurrency"))
+            md["prod"][i]["up"] = float(row["UnitPriceCurrency"])
 
-        md["prod"][i]["lang"] = default_langs[i]  # keep canonical
+    # Overhead
+    role_map = {x.lower(): i for i, x in enumerate(default_roles)}
 
-    # overhead
-    role_to_idx = {x.strip().lower(): i for i, x in enumerate(default_roles)}
     for _, row in oh_df.iterrows():
-        m = normalize_month(row.get("Month"))
+        m = normalize_month(row["Month"])
         if not m:
             continue
-        role = str(row.get("Role", "")).strip().lower()
-        if role not in role_to_idx:
+
+        role = str(row["Role"]).strip().lower()
+        if role not in role_map:
             continue
-        i = role_to_idx[role]
-        md = get_month_data(m)
+
+        i = role_map[role]
+        md = st.session_state["data"]["months"][m]
 
         if pd.notna(row.get("HC")):
-            md["oh"][i]["hc"] = float(row.get("HC"))
-        if pd.notna(row.get("BaseSalaryTRY")):
-            md["oh"][i]["salary"] = float(row.get("BaseSalaryTRY"))
-        md["oh"][i]["role"] = default_roles[i]  # keep canonical
+            md["oh"][i]["hc"] = float(row["HC"])
 
-    # Trigger safe reload
+        if pd.notna(row.get("BaseSalaryTRY")):
+            md["oh"][i]["salary"] = float(row["BaseSalaryTRY"])
+
     st.session_state["pending_reload_month"] = selected_month
 
-if uploaded is not None:
-    colA, colB = st.columns([1, 2])
-    with colA:
-        if st.button("✅ Apply import"):
-            try:
-                apply_import_xlsx(uploaded)
-                st.success("Import applied. Reloading…")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Import failed: {e}")
-    with colB:
-        st.info("Tip: Month can be Jan/January/1..12 or an Excel date.")
+if uploaded:
+    if st.button("Apply Import"):
+        try:
+            apply_import(uploaded)
+            st.success("Import applied successfully.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Import failed: {e}")
 
 # ============================
 # Production Blocks UI
