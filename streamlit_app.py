@@ -1,6 +1,73 @@
-# =====================================================
-# EXCEL TEMPLATE + IMPORT
-# =====================================================
+import streamlit as st
+import pandas as pd
+from io import BytesIO
+
+st.set_page_config(page_title="Budget App", layout="wide")
+st.title("📊 Budget App – Workforce Model")
+
+# =========================================
+# CONSTANTS
+# =========================================
+
+MONTHS = ["Jan","Feb","Mar","Apr","May","Jun",
+          "Jul","Aug","Sep","Oct","Nov","Dec"]
+
+LANGS = ["DE","EN","TR","FR","IT","NL"]
+ROLES = ["Team Manager","QA","Ops","Trainer","RTA/WFM"]
+
+# =========================================
+# SIDEBAR – GLOBAL DRIVERS
+# =========================================
+
+st.sidebar.header("Global Drivers")
+
+worked_hours_default = st.sidebar.number_input("Worked Hours (Default)", value=180.0)
+shrinkage_default = st.sidebar.number_input("Shrinkage", value=0.15)
+absenteeism = st.sidebar.number_input("Absenteeism", value=0.10)
+
+salary_multiplier = st.sidebar.number_input("Salary Multiplier", value=1.7)
+bonus_pct = st.sidebar.number_input("Bonus %", value=0.10)
+bonus_multiplier = st.sidebar.number_input("Bonus Multiplier", value=1.0)
+meal_card = st.sidebar.number_input("Meal Card (TRY)", value=5850.0)
+
+currency = st.sidebar.selectbox("Currency",["EUR","USD"])
+fx_default = st.sidebar.number_input("FX Default", value=38.0)
+
+training_productivity = st.sidebar.number_input(
+    "Training Productivity %",
+    value=0.50,
+    help="0.5 means 50% billable productivity"
+)
+
+# =========================================
+# SESSION STORAGE
+# =========================================
+
+if "data" not in st.session_state:
+    st.session_state["data"] = {
+        m:{
+            "fx":fx_default,
+            "wh":worked_hours_default,
+            "sh":shrinkage_default,
+            "prod":[{
+                "opening":0.0,
+                "hires":0.0,
+                "attrition":0.07,
+                "training_hc":0.0,
+                "salary":0.0,
+                "up":0.0,
+                "training_up":0.0
+            } for _ in LANGS],
+            "oh":[{"hc":0.0,"salary":0.0} for _ in ROLES]
+        } for m in MONTHS
+    }
+
+selected_month = st.sidebar.selectbox("Select Month", MONTHS)
+md = st.session_state["data"][selected_month]
+
+# =========================================
+# EXCEL TEMPLATE
+# =========================================
 
 st.divider()
 st.subheader("Excel Template & Import")
@@ -8,92 +75,185 @@ st.subheader("Excel Template & Import")
 def build_template():
     inputs_df = pd.DataFrame({
         "Month": MONTHS,
-        "FX": [fx_default]*12,
-        "WorkedHours": [worked_hours_default]*12,
-        "Shrinkage": [shrinkage_default]*12
+        "FX":[fx_default]*12,
+        "WorkedHours":[worked_hours_default]*12,
+        "Shrinkage":[shrinkage_default]*12
     })
 
-    prod_rows = []
+    prod_rows=[]
     for m in MONTHS:
         for lang in LANGS:
             prod_rows.append({
-                "Month": m,
-                "Language": lang,
-                "OpeningHC": 0,
-                "Hires": 0,
-                "AttritionPct": 0.07,
-                "TrainingHC": 0,
-                "BaseSalary": 0,
-                "UnitPrice": 0,
-                "TrainingUnitPrice": 0
+                "Month":m,
+                "Language":lang,
+                "OpeningHC":0,
+                "Hires":0,
+                "Attrition%":0.07,
+                "TrainingHC":0,
+                "Salary":0,
+                "UnitPrice":0,
+                "TrainingUP":0
             })
-    prod_df = pd.DataFrame(prod_rows)
+    prod_df=pd.DataFrame(prod_rows)
 
-    oh_rows = []
+    oh_rows=[]
     for m in MONTHS:
         for role in ROLES:
             oh_rows.append({
-                "Month": m,
-                "Role": role,
-                "HC": 0,
-                "Salary": 0
+                "Month":m,
+                "Role":role,
+                "HC":0,
+                "Salary":0
             })
-    oh_df = pd.DataFrame(oh_rows)
+    oh_df=pd.DataFrame(oh_rows)
 
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
-        prod_df.to_excel(writer, sheet_name="Production", index=False)
-        oh_df.to_excel(writer, sheet_name="Overhead", index=False)
+    output=BytesIO()
+    with pd.ExcelWriter(output,engine="openpyxl") as writer:
+        inputs_df.to_excel(writer,"Inputs",index=False)
+        prod_df.to_excel(writer,"Production",index=False)
+        oh_df.to_excel(writer,"Overhead",index=False)
 
     return output.getvalue()
 
 st.download_button(
     "⬇ Download Excel Template",
-    data=build_template(),
-    file_name="workforce_budget_template.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    build_template(),
+    file_name="budget_template.xlsx"
 )
 
-uploaded = st.file_uploader("Upload Filled Template (.xlsx)", type=["xlsx"])
+uploaded = st.file_uploader("Upload Filled Template", type=["xlsx"])
 
-if uploaded:
-    if st.button("Apply Import"):
-        xls = pd.ExcelFile(uploaded)
+if uploaded and st.button("Apply Import"):
+    xls = pd.ExcelFile(uploaded)
+    inputs_df = pd.read_excel(xls,"Inputs")
+    prod_df = pd.read_excel(xls,"Production")
+    oh_df = pd.read_excel(xls,"Overhead")
 
-        inputs_df = pd.read_excel(xls,"Inputs")
-        prod_df = pd.read_excel(xls,"Production")
-        oh_df = pd.read_excel(xls,"Overhead")
+    for _,row in inputs_df.iterrows():
+        if row["Month"] in MONTHS:
+            st.session_state["data"][row["Month"]]["fx"]=row["FX"]
+            st.session_state["data"][row["Month"]]["wh"]=row["WorkedHours"]
+            st.session_state["data"][row["Month"]]["sh"]=row["Shrinkage"]
 
-        # INPUTS
-        for _,row in inputs_df.iterrows():
-            m = row["Month"]
-            if m in MONTHS:
-                st.session_state["data"][m]["fx"] = row["FX"]
-                st.session_state["data"][m]["wh"] = row["WorkedHours"]
-                st.session_state["data"][m]["sh"] = row["Shrinkage"]
+    for _,row in prod_df.iterrows():
+        if row["Month"] in MONTHS and row["Language"] in LANGS:
+            idx=LANGS.index(row["Language"])
+            st.session_state["data"][row["Month"]]["prod"][idx]={
+                "opening":row["OpeningHC"],
+                "hires":row["Hires"],
+                "attrition":row["Attrition%"],
+                "training_hc":row["TrainingHC"],
+                "salary":row["Salary"],
+                "up":row["UnitPrice"],
+                "training_up":row["TrainingUP"]
+            }
 
-        # PRODUCTION
-        for _,row in prod_df.iterrows():
-            m = row["Month"]
-            if m in MONTHS and row["Language"] in LANGS:
-                idx = LANGS.index(row["Language"])
-                st.session_state["data"][m]["prod"][idx]["opening_hc"] = row["OpeningHC"]
-                st.session_state["data"][m]["prod"][idx]["hires"] = row["Hires"]
-                st.session_state["data"][m]["prod"][idx]["attrition_pct"] = row["AttritionPct"]
-                st.session_state["data"][m]["prod"][idx]["training_hc"] = row["TrainingHC"]
-                st.session_state["data"][m]["prod"][idx]["salary"] = row["BaseSalary"]
-                st.session_state["data"][m]["prod"][idx]["up"] = row["UnitPrice"]
-                st.session_state["data"][m]["prod"][idx]["up_training"] = row["TrainingUnitPrice"]
+    for _,row in oh_df.iterrows():
+        if row["Month"] in MONTHS and row["Role"] in ROLES:
+            idx=ROLES.index(row["Role"])
+            st.session_state["data"][row["Month"]]["oh"][idx]={
+                "hc":row["HC"],
+                "salary":row["Salary"]
+            }
 
-        # OVERHEAD
-        for _,row in oh_df.iterrows():
-            m = row["Month"]
-            if m in MONTHS and row["Role"] in ROLES:
-                idx = ROLES.index(row["Role"])
-                st.session_state["data"][m]["oh"][idx]["hc"] = row["HC"]
-                st.session_state["data"][m]["oh"][idx]["salary"] = row["Salary"]
+    st.success("Import Successful")
+    st.rerun()
 
-        st.success("Import Applied")
-        st.rerun()
+# =========================================
+# PRODUCTION UI
+# =========================================
 
+st.divider()
+st.subheader("Production")
+
+for i,lang in enumerate(LANGS):
+    with st.expander(lang,expanded=(i==0)):
+        c1,c2,c3,c4,c5,c6,c7=st.columns(7)
+
+        row=md["prod"][i]
+
+        row["opening"]=c1.number_input("Opening HC",value=row["opening"],key=f"op_{selected_month}_{i}")
+        row["hires"]=c2.number_input("Hires",value=row["hires"],key=f"hi_{selected_month}_{i}")
+        row["attrition"]=c3.number_input("Attrition %",value=row["attrition"],key=f"at_{selected_month}_{i}")
+        row["training_hc"]=c4.number_input("Training HC",value=row["training_hc"],key=f"tr_{selected_month}_{i}")
+        row["salary"]=c5.number_input("Salary",value=row["salary"],key=f"sal_{selected_month}_{i}")
+        row["up"]=c6.number_input("UP",value=row["up"],key=f"up_{selected_month}_{i}")
+        row["training_up"]=c7.number_input("Training UP",value=row["training_up"],key=f"tup_{selected_month}_{i}")
+
+# =========================================
+# OVERHEAD UI
+# =========================================
+
+st.subheader("Overhead")
+
+for i,role in enumerate(ROLES):
+    with st.expander(role,expanded=(i==0)):
+        c1,c2=st.columns(2)
+        row=md["oh"][i]
+        row["hc"]=c1.number_input("HC",value=row["hc"],key=f"ohhc_{selected_month}_{i}")
+        row["salary"]=c2.number_input("Salary",value=row["salary"],key=f"ohsal_{selected_month}_{i}")
+
+# =========================================
+# CALCULATIONS
+# =========================================
+
+fx=md["fx"]
+wh=md["wh"]
+sh=md["sh"]
+
+effective_hours = wh*(1-sh)*(1-absenteeism)
+
+total_revenue=0
+total_cost=0
+
+for row in md["prod"]:
+    attr_volume=row["opening"]*row["attrition"]
+    closing=row["opening"]+row["hires"]-attr_volume
+    productive=max(closing-row["training_hc"],0)
+
+    bonus=row["salary"]*bonus_pct*bonus_multiplier
+    gross=row["salary"]+bonus
+    loaded=gross*salary_multiplier
+    cost_per=loaded+meal_card
+
+    revenue_productive=productive*effective_hours*row["up"]*fx
+    revenue_training=row["training_hc"]*effective_hours*training_productivity*row["training_up"]*fx
+
+    total_revenue+=revenue_productive+revenue_training
+    total_cost+=closing*cost_per
+
+for row in md["oh"]:
+    bonus=row["salary"]*bonus_pct*bonus_multiplier
+    gross=row["salary"]+bonus
+    loaded=gross*salary_multiplier
+    total_cost+=row["hc"]*(loaded+meal_card)
+
+margin=total_revenue-total_cost
+gm=margin/total_revenue if total_revenue>0 else 0
+
+# =========================================
+# SUMMARY
+# =========================================
+
+st.divider()
+st.subheader("Final Summary")
+
+c1,c2,c3,c4=st.columns(4)
+c1.metric("Revenue",f"{total_revenue:,.0f}")
+c2.metric("Cost",f"{total_cost:,.0f}")
+c3.metric("Margin",f"{margin:,.0f}")
+c4.metric("GM %",f"{gm*100:.1f}%")
+
+# =========================================
+# CHARTS
+# =========================================
+
+st.divider()
+st.subheader("Charts")
+
+chart_df=pd.DataFrame({
+    "Metric":["Revenue","Cost","Margin"],
+    "Value":[total_revenue,total_cost,margin]
+})
+
+st.bar_chart(chart_df.set_index("Metric"))
