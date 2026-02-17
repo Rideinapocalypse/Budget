@@ -3,7 +3,7 @@ import pandas as pd
 from io import BytesIO
 
 st.set_page_config(page_title="Budget App", layout="wide")
-st.title("📊 Budget App – Workforce Model")
+st.title("📊 Budget App – Workforce + Multi-Solution Model")
 
 # =========================================
 # CONSTANTS
@@ -21,7 +21,7 @@ ROLES = ["Team Manager","QA","Ops","Trainer","RTA/WFM"]
 
 st.sidebar.header("Global Drivers")
 
-worked_hours_default = st.sidebar.number_input("Worked Hours (Default)", value=180.0)
+worked_hours_default = st.sidebar.number_input("Worked Hours", value=180.0)
 shrinkage_default = st.sidebar.number_input("Shrinkage", value=0.15)
 absenteeism = st.sidebar.number_input("Absenteeism", value=0.10)
 
@@ -35,8 +35,7 @@ fx_default = st.sidebar.number_input("FX Default", value=38.0)
 
 training_productivity = st.sidebar.number_input(
     "Training Productivity %",
-    value=0.50,
-    help="0.5 means 50% billable productivity"
+    value=0.50
 )
 
 # =========================================
@@ -55,8 +54,9 @@ if "data" not in st.session_state:
                 "attrition":0.07,
                 "training_hc":0.0,
                 "salary":0.0,
-                "up":0.0,
-                "training_up":0.0
+                "up_a":0.0,
+                "up_b":0.0,
+                "alloc_b":0.0
             } for _ in LANGS],
             "oh":[{"hc":0.0,"salary":0.0} for _ in ROLES]
         } for m in MONTHS
@@ -91,8 +91,9 @@ def build_template():
                 "Attrition%":0.07,
                 "TrainingHC":0,
                 "Salary":0,
-                "UnitPrice":0,
-                "TrainingUP":0
+                "UP_A":0,
+                "UP_B":0,
+                "Allocation_B%":0
             })
     prod_df=pd.DataFrame(prod_rows)
 
@@ -144,8 +145,9 @@ if uploaded and st.button("Apply Import"):
                 "attrition":row["Attrition%"],
                 "training_hc":row["TrainingHC"],
                 "salary":row["Salary"],
-                "up":row["UnitPrice"],
-                "training_up":row["TrainingUP"]
+                "up_a":row["UP_A"],
+                "up_b":row["UP_B"],
+                "alloc_b":row["Allocation_B%"]/100
             }
 
     for _,row in oh_df.iterrows():
@@ -168,28 +170,28 @@ st.subheader("Production")
 
 for i,lang in enumerate(LANGS):
     with st.expander(lang,expanded=(i==0)):
-        c1,c2,c3,c4,c5,c6,c7=st.columns(7)
-
         row=md["prod"][i]
+        c1,c2,c3,c4,c5,c6,c7,c8=st.columns(8)
 
         row["opening"]=c1.number_input("Opening HC",value=row["opening"],key=f"op_{selected_month}_{i}")
         row["hires"]=c2.number_input("Hires",value=row["hires"],key=f"hi_{selected_month}_{i}")
         row["attrition"]=c3.number_input("Attrition %",value=row["attrition"],key=f"at_{selected_month}_{i}")
         row["training_hc"]=c4.number_input("Training HC",value=row["training_hc"],key=f"tr_{selected_month}_{i}")
         row["salary"]=c5.number_input("Salary",value=row["salary"],key=f"sal_{selected_month}_{i}")
-        row["up"]=c6.number_input("UP",value=row["up"],key=f"up_{selected_month}_{i}")
-        row["training_up"]=c7.number_input("Training UP",value=row["training_up"],key=f"tup_{selected_month}_{i}")
+        row["up_a"]=c6.number_input("UP A",value=row["up_a"],key=f"upa_{selected_month}_{i}")
+        row["up_b"]=c7.number_input("UP B",value=row["up_b"],key=f"upb_{selected_month}_{i}")
+        row["alloc_b"]=c8.number_input("Allocation B %",value=row["alloc_b"],key=f"alloc_{selected_month}_{i}")
 
 # =========================================
-# OVERHEAD UI
+# OVERHEAD
 # =========================================
 
 st.subheader("Overhead")
 
 for i,role in enumerate(ROLES):
     with st.expander(role,expanded=(i==0)):
-        c1,c2=st.columns(2)
         row=md["oh"][i]
+        c1,c2=st.columns(2)
         row["hc"]=c1.number_input("HC",value=row["hc"],key=f"ohhc_{selected_month}_{i}")
         row["salary"]=c2.number_input("Salary",value=row["salary"],key=f"ohsal_{selected_month}_{i}")
 
@@ -216,10 +218,14 @@ for row in md["prod"]:
     loaded=gross*salary_multiplier
     cost_per=loaded+meal_card
 
-    revenue_productive=productive*effective_hours*row["up"]*fx
-    revenue_training=row["training_hc"]*effective_hours*training_productivity*row["training_up"]*fx
+    alloc_b=row["alloc_b"]/100
+    alloc_a=1-alloc_b
 
-    total_revenue+=revenue_productive+revenue_training
+    revenue_a=productive*effective_hours*row["up_a"]*alloc_a*fx
+    revenue_b=productive*effective_hours*row["up_b"]*alloc_b*fx
+    revenue_training=row["training_hc"]*effective_hours*training_productivity*row["up_a"]*fx
+
+    total_revenue+=revenue_a+revenue_b+revenue_training
     total_cost+=closing*cost_per
 
 for row in md["oh"]:
@@ -245,11 +251,11 @@ c3.metric("Margin",f"{margin:,.0f}")
 c4.metric("GM %",f"{gm*100:.1f}%")
 
 # =========================================
-# CHARTS
+# CHART
 # =========================================
 
 st.divider()
-st.subheader("Charts")
+st.subheader("Chart")
 
 chart_df=pd.DataFrame({
     "Metric":["Revenue","Cost","Margin"],
