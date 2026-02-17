@@ -8,216 +8,332 @@ st.title("📊 Budget App")
 # =====================================================
 # CONSTANTS
 # =====================================================
+
 MONTHS = ["Jan","Feb","Mar","Apr","May","Jun",
           "Jul","Aug","Sep","Oct","Nov","Dec"]
 
 LANGS = ["DE","EN","TR","FR","IT","NL"]
 ROLES = ["Team Manager","QA","Ops","Trainer","RTA/WFM"]
-MAX_SOLUTIONS = 5
 
 # =====================================================
-# GLOBAL SIDEBAR INPUTS
+# SIDEBAR – GLOBAL INPUTS
 # =====================================================
-st.sidebar.header("Global Drivers")
 
-worked_hours_default = st.sidebar.number_input("Worked Hours (default)", 0.0, 300.0, 180.0)
-shrinkage_default = st.sidebar.slider("Shrinkage % (default)", 0.0, 0.5, 0.15)
+st.sidebar.header("Global Inputs")
 
-salary_multiplier = st.sidebar.number_input("Salary Multiplier", 0.0, 5.0, 1.7)
-bonus_pct = st.sidebar.number_input("Bonus %", 0.0, 2.0, 0.10)
-bonus_multiplier = st.sidebar.number_input("Bonus Multiplier", 0.0, 5.0, 1.0)
-meal_card = st.sidebar.number_input("Meal Card (TRY)", 0.0, 20000.0, 5850.0)
+worked_hours_default = st.sidebar.number_input("Worked Hours (Default)", value=180.0)
+shrinkage_default = st.sidebar.number_input("Shrinkage (Default)", value=0.15)
 
-currency = st.sidebar.selectbox("Unit Price Currency", ["EUR","USD"])
-fx_default = st.sidebar.number_input("FX Default", 0.0, 200.0, 38.0)
+salary_multiplier = st.sidebar.number_input("Salary Multiplier", value=1.7)
+bonus_pct = st.sidebar.number_input("Bonus %", value=0.10)
+bonus_multiplier = st.sidebar.number_input("Bonus Multiplier", value=1.0)
+meal_card = st.sidebar.number_input("Meal Card (TRY)", value=5850.0)
+
+currency = st.sidebar.selectbox("Unit Price Currency",["EUR","USD"])
+fx_default = st.sidebar.number_input("FX Default", value=38.0)
 
 # =====================================================
-# INIT STORAGE
+# ADVANCED DRIVERS
 # =====================================================
+
+st.sidebar.divider()
+st.sidebar.subheader("Advanced Drivers")
+
+absenteeism = st.sidebar.number_input("Absenteeism %", value=0.10)
+attrition = st.sidebar.number_input("Attrition %", value=0.07)
+overtime_hours = st.sidebar.number_input("Overtime Hours (per HC)", value=0.0)
+
+billing_model = st.sidebar.selectbox(
+    "Invoicing Model",
+    ["Full Productive Hours","50% Billing","Fixed HC"]
+)
+
+# =====================================================
+# SESSION STORAGE
+# =====================================================
+
 if "data" not in st.session_state:
-    st.session_state.data = {}
-    for m in MONTHS:
-        st.session_state.data[m] = {
-            "inputs": {"fx": fx_default, "wh": worked_hours_default, "sh": shrinkage_default},
-            "prod": {lang: [] for lang in LANGS},
-            "oh": [{"role": r, "hc":0.0,"salary":0.0} for r in ROLES]
-        }
+    st.session_state["data"] = {
+        m:{
+            "fx":None,
+            "wh":None,
+            "sh":None,
+            "prod":[{"hc":0.0,"salary":0.0,"up":0.0} for _ in range(6)],
+            "oh":[{"hc":0.0,"salary":0.0} for _ in range(5)]
+        } for m in MONTHS
+    }
 
 selected_month = st.sidebar.selectbox("Select Month", MONTHS)
-md = st.session_state.data[selected_month]
-
-# =====================================================
-# SOLUTIONS PER LANGUAGE
-# =====================================================
-st.sidebar.divider()
-st.sidebar.subheader("Solutions per Language")
-
-solution_counts = {}
-for lang in LANGS:
-    solution_counts[lang] = st.sidebar.number_input(
-        f"{lang} solutions",
-        min_value=0,
-        max_value=MAX_SOLUTIONS,
-        value=len(md["prod"][lang])
-    )
-
-# ensure structure matches solution count
-for lang in LANGS:
-    current = len(md["prod"][lang])
-    target = solution_counts[lang]
-
-    if target > current:
-        for i in range(target-current):
-            md["prod"][lang].append(
-                {"hc":0.0,"salary":0.0,"up":0.0}
-            )
-    elif target < current:
-        md["prod"][lang] = md["prod"][lang][:target]
+md = st.session_state["data"][selected_month]
 
 # =====================================================
 # MONTH OVERRIDES
 # =====================================================
-st.subheader("Month Overrides")
 
-c1,c2,c3 = st.columns(3)
-md["inputs"]["fx"] = c1.number_input("FX", 0.0, 200.0, md["inputs"]["fx"])
-md["inputs"]["wh"] = c2.number_input("Worked Hours", 0.0, 300.0, md["inputs"]["wh"])
-md["inputs"]["sh"] = c3.slider("Shrinkage", 0.0, 0.5, md["inputs"]["sh"])
+col1,col2,col3 = st.columns(3)
+
+md["fx"] = col1.number_input("FX (Month)",
+    value=md["fx"] if md["fx"] else fx_default,
+    key=f"fx_{selected_month}")
+
+md["wh"] = col2.number_input("Worked Hours (Month)",
+    value=md["wh"] if md["wh"] else worked_hours_default,
+    key=f"wh_{selected_month}")
+
+md["sh"] = col3.number_input("Shrinkage (Month)",
+    value=md["sh"] if md["sh"] else shrinkage_default,
+    key=f"sh_{selected_month}")
 
 # =====================================================
-# PRODUCTION UI
+# EXCEL TEMPLATE + IMPORT
 # =====================================================
+
 st.divider()
+st.subheader("📁 Excel Template & Import")
+
+def build_template():
+    inputs_df = pd.DataFrame({
+        "Month": MONTHS,
+        "FX": [fx_default]*12,
+        "WorkedHours": [worked_hours_default]*12,
+        "Shrinkage": [shrinkage_default]*12
+    })
+
+    prod_rows = []
+    for m in MONTHS:
+        for lang in LANGS:
+            prod_rows.append({
+                "Month": m,
+                "Language": lang,
+                "HC": 0,
+                "Salary": 0,
+                "UnitPrice": 0
+            })
+    prod_df = pd.DataFrame(prod_rows)
+
+    oh_rows = []
+    for m in MONTHS:
+        for role in ROLES:
+            oh_rows.append({
+                "Month": m,
+                "Role": role,
+                "HC": 0,
+                "Salary": 0
+            })
+    oh_df = pd.DataFrame(oh_rows)
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
+        prod_df.to_excel(writer, sheet_name="Production", index=False)
+        oh_df.to_excel(writer, sheet_name="Overhead", index=False)
+
+    return output.getvalue()
+
+st.download_button(
+    "⬇ Download Excel Template",
+    data=build_template(),
+    file_name="budget_template.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+uploaded = st.file_uploader("Upload Filled Template (.xlsx)", type=["xlsx"])
+
+if uploaded and st.button("Apply Import"):
+    xls = pd.ExcelFile(uploaded)
+
+    inputs_df = pd.read_excel(xls,"Inputs")
+    prod_df = pd.read_excel(xls,"Production")
+    oh_df = pd.read_excel(xls,"Overhead")
+
+    for _,row in inputs_df.iterrows():
+        if row["Month"] in MONTHS:
+            st.session_state["data"][row["Month"]]["fx"] = row["FX"]
+            st.session_state["data"][row["Month"]]["wh"] = row["WorkedHours"]
+            st.session_state["data"][row["Month"]]["sh"] = row["Shrinkage"]
+
+    for _,row in prod_df.iterrows():
+        if row["Month"] in MONTHS and row["Language"] in LANGS:
+            idx = LANGS.index(row["Language"])
+            st.session_state["data"][row["Month"]]["prod"][idx] = {
+                "hc":row["HC"],
+                "salary":row["Salary"],
+                "up":row["UnitPrice"]
+            }
+
+    for _,row in oh_df.iterrows():
+        if row["Month"] in MONTHS and row["Role"] in ROLES:
+            idx = ROLES.index(row["Role"])
+            st.session_state["data"][row["Month"]]["oh"][idx] = {
+                "hc":row["HC"],
+                "salary":row["Salary"]
+            }
+
+    st.success("Import Applied")
+    st.rerun()
+
+# =====================================================
+# PRODUCTION
+# =====================================================
+
 st.subheader("Production")
 
-for lang in LANGS:
-    if solution_counts[lang] == 0:
-        continue
-
-    with st.expander(lang, expanded=False):
-        for i in range(solution_counts[lang]):
-            st.markdown(f"**{lang} – Solution {i+1}**")
-            col1,col2,col3 = st.columns(3)
-
-            md["prod"][lang][i]["hc"] = col1.number_input(
-                "HC", 0.0, 1000.0,
-                md["prod"][lang][i]["hc"],
-                key=f"{selected_month}_{lang}_hc_{i}"
-            )
-
-            md["prod"][lang][i]["salary"] = col2.number_input(
-                "Base Salary (TRY)", 0.0, 200000.0,
-                md["prod"][lang][i]["salary"],
-                key=f"{selected_month}_{lang}_sal_{i}"
-            )
-
-            md["prod"][lang][i]["up"] = col3.number_input(
-                f"Unit Price ({currency})", 0.0, 1000.0,
-                md["prod"][lang][i]["up"],
-                key=f"{selected_month}_{lang}_up_{i}"
-            )
+for i in range(6):
+    with st.expander(LANGS[i], expanded=(i==0)):
+        c1,c2,c3 = st.columns(3)
+        md["prod"][i]["hc"] = c1.number_input("HC", md["prod"][i]["hc"], key=f"hc_{selected_month}_{i}")
+        md["prod"][i]["salary"] = c2.number_input("Salary", md["prod"][i]["salary"], key=f"sal_{selected_month}_{i}")
+        md["prod"][i]["up"] = c3.number_input("Unit Price", md["prod"][i]["up"], key=f"up_{selected_month}_{i}")
 
 # =====================================================
 # OVERHEAD
 # =====================================================
-st.divider()
+
 st.subheader("Overhead")
 
-for i,row in enumerate(md["oh"]):
-    with st.expander(row["role"], expanded=False):
-        col1,col2 = st.columns(2)
-        row["hc"] = col1.number_input("HC", 0.0, 200.0, row["hc"], key=f"{selected_month}_oh_hc_{i}")
-        row["salary"] = col2.number_input("Base Salary", 0.0, 200000.0, row["salary"], key=f"{selected_month}_oh_sal_{i}")
+for i in range(5):
+    with st.expander(ROLES[i], expanded=(i==0)):
+        c1,c2 = st.columns(2)
+        md["oh"][i]["hc"] = c1.number_input("OH HC", md["oh"][i]["hc"], key=f"ohhc_{selected_month}_{i}")
+        md["oh"][i]["salary"] = c2.number_input("Salary", md["oh"][i]["salary"], key=f"ohsal_{selected_month}_{i}")
 
 # =====================================================
-# CALCULATION
+# CALCULATIONS
 # =====================================================
-fx = md["inputs"]["fx"]
-wh = md["inputs"]["wh"]
-sh = md["inputs"]["sh"]
 
-productive_hours = wh * (1 - sh)
+fx = md["fx"] or fx_default
+wh = md["wh"] or worked_hours_default
+sh = md["sh"] or shrinkage_default
 
-def loaded_cost(base):
-    bonus = base * bonus_pct * bonus_multiplier
-    gross = base + bonus
-    loaded = gross * salary_multiplier
-    return loaded + meal_card
+effective_hours = wh*(1-sh)*(1-absenteeism)
+
+if billing_model=="50% Billing":
+    effective_hours *= 0.5
 
 total_revenue = 0
-total_prod_cost = 0
+total_cost = 0
 
-for lang in LANGS:
-    for sol in md["prod"][lang]:
-        hc = sol["hc"]
-        salary = sol["salary"]
-        up = sol["up"]
+for row in md["prod"]:
+    hc=row["hc"]
+    salary=row["salary"]
+    up=row["up"]
 
-        revenue = hc * productive_hours * up * fx
-        cost = hc * loaded_cost(salary)
+    bonus=salary*bonus_pct*bonus_multiplier
+    gross=salary+bonus
+    loaded=gross*salary_multiplier
+    cost_per=loaded+meal_card
 
-        total_revenue += revenue
-        total_prod_cost += cost
+    revenue=hc*effective_hours*up*fx
+    revenue+=hc*overtime_hours*up*fx
 
-total_oh = 0
+    total_revenue+=revenue
+    total_cost+=hc*cost_per
+
 for row in md["oh"]:
-    total_oh += row["hc"] * loaded_cost(row["salary"])
+    hc=row["hc"]
+    salary=row["salary"]
+    bonus=salary*bonus_pct*bonus_multiplier
+    gross=salary+bonus
+    loaded=gross*salary_multiplier
+    total_cost+=hc*(loaded+meal_card)
 
-grand_cost = total_prod_cost + total_oh
-margin = total_revenue - grand_cost
-gm = margin / total_revenue if total_revenue > 0 else 0
+margin = total_revenue-total_cost
+gm = margin/total_revenue if total_revenue>0 else 0
 
 # =====================================================
 # SUMMARY
 # =====================================================
+
 st.divider()
 st.subheader("Final Summary")
 
-s1,s2,s3,s4 = st.columns(4)
-s1.metric("Revenue (TRY)", f"{total_revenue:,.0f}")
-s2.metric("Production Cost", f"{total_prod_cost:,.0f}")
-s3.metric("Overhead Cost", f"{total_oh:,.0f}")
-s4.metric("GM %", f"{gm*100:.1f}%")
-
-t1,t2 = st.columns(2)
-t1.metric("Grand Cost", f"{grand_cost:,.0f}")
-t2.metric("Margin", f"{margin:,.0f}")
+c1,c2,c3,c4 = st.columns(4)
+c1.metric("Revenue",f"{total_revenue:,.0f}")
+c2.metric("Total Cost",f"{total_cost:,.0f}")
+c3.metric("Margin",f"{margin:,.0f}")
+c4.metric("GM %",f"{gm*100:.1f}%")
 
 # =====================================================
-# MONTH OVER MONTH
+# GRAPHS
 # =====================================================
+
+st.divider()
+st.subheader("Summary Graphics")
+
+chart_df = pd.DataFrame({
+    "Value":[total_revenue,total_cost,margin]
+},index=["Revenue","Cost","Margin"])
+
+st.bar_chart(chart_df)
+
+# =====================================================
+# MOM ANALYSIS
+# =====================================================
+
 st.divider()
 st.subheader("Month-over-Month")
 
 compare_month = st.selectbox("Compare With", MONTHS)
 
 def compute_month(m):
-    md2 = st.session_state.data[m]
-    fx2 = md2["inputs"]["fx"]
-    wh2 = md2["inputs"]["wh"]
-    sh2 = md2["inputs"]["sh"]
-    ph = wh2*(1-sh2)
+    md=st.session_state["data"][m]
+    fx=md["fx"] or fx_default
+    wh=md["wh"] or worked_hours_default
+    sh=md["sh"] or shrinkage_default
+    hours=wh*(1-sh)*(1-absenteeism)
 
     rev=0
     cost=0
 
-    for lang in LANGS:
-        for sol in md2["prod"][lang]:
-            rev += sol["hc"]*ph*sol["up"]*fx2
-            cost += sol["hc"]*loaded_cost(sol["salary"])
+    for row in md["prod"]:
+        rev+=row["hc"]*hours*row["up"]*fx
+        bonus=row["salary"]*bonus_pct*bonus_multiplier
+        gross=row["salary"]+bonus
+        loaded=gross*salary_multiplier
+        cost+=row["hc"]*(loaded+meal_card)
 
-    for row in md2["oh"]:
-        cost += row["hc"]*loaded_cost(row["salary"])
+    for row in md["oh"]:
+        bonus=row["salary"]*bonus_pct*bonus_multiplier
+        gross=row["salary"]+bonus
+        loaded=gross*salary_multiplier
+        cost+=row["hc"]*(loaded+meal_card)
 
-    margin = rev-cost
-    gm = margin/rev if rev>0 else 0
+    margin=rev-cost
+    gm=margin/rev if rev>0 else 0
     return rev,cost,margin,gm
 
-cur = compute_month(selected_month)
-prev = compute_month(compare_month)
+cur_rev,cur_cost,cur_margin,cur_gm=compute_month(selected_month)
+prev_rev,prev_cost,prev_margin,prev_gm=compute_month(compare_month)
 
-c1,c2,c3,c4 = st.columns(4)
-c1.metric("Revenue Δ", f"{cur[0]-prev[0]:,.0f}")
-c2.metric("Cost Δ", f"{cur[1]-prev[1]:,.0f}")
-c3.metric("Margin Δ", f"{cur[2]-prev[2]:,.0f}")
-c4.metric("GM Δ (pp)", f"{(cur[3]-prev[3])*100:.2f}")
+d1,d2,d3,d4 = st.columns(4)
+d1.metric("Revenue Δ",f"{cur_rev-prev_rev:,.0f}")
+d2.metric("Cost Δ",f"{cur_cost-prev_cost:,.0f}")
+d3.metric("Margin Δ",f"{cur_margin-prev_margin:,.0f}")
+d4.metric("GM Δ (pp)",f"{(cur_gm-prev_gm)*100:.2f}")
+
+# =====================================================
+# EXPORT
+# =====================================================
+
+st.divider()
+st.subheader("Export Current Month")
+
+def export_excel():
+    df = pd.DataFrame([{
+        "Month":selected_month,
+        "Revenue":total_revenue,
+        "Cost":total_cost,
+        "Margin":margin,
+        "GM%":gm
+    }])
+    output=BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer,index=False)
+    return output.getvalue()
+
+st.download_button(
+    "⬇ Download Summary Excel",
+    data=export_excel(),
+    file_name=f"budget_summary_{selected_month}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
