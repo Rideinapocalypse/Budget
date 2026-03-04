@@ -337,7 +337,7 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
     att = st.session_state.attrition_rate
     cola_cfgs = client().get("cola_configs", {})
     for m in MONTHS:
-        blocks_m = st.session_state.blocks.get(m, [])
+        blocks_m = client()["blocks"].get(m, [])
         rows = blocks_m or [{"lang":"","hc":0,"salary":0,"unit_price":0,
                               "shrink_override":None,"fx_override":None,"hours_override":None}]
         is_first = True
@@ -471,7 +471,7 @@ def build_export(g):
 
     ri2 = 3
     for m in MONTHS:
-        for blk_i, b in enumerate(st.session_state.blocks.get(m, [])):
+        for blk_i, b in enumerate(client()["blocks"].get(m, [])):
             raw_shrink = b.get("shrink_override") or g["shrink"]
             shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
             fx     = b.get("fx_override")    or g["fx"]
