@@ -1,738 +1,642 @@
-import streamlit as st
-import pandas as pd
-from io import BytesIO
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CC Budget Tool — Call Center Budget & Forecast</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-# ============================
-# Page config
-# ============================
-st.set_page_config(page_title="Budget App", layout="wide")
-st.title("📊 Budget App")
-
-# ============================
-# UI: tighter spacing (smaller blocks)
-# ============================
-st.markdown(
-    """
-<style>
-div.block-container {padding-top: 1.0rem; padding-bottom: 1.0rem; max-width: 1400px;}
-div[data-testid="stVerticalBlock"] > div {gap: 0.35rem;}
-[data-testid="stMetric"] {padding: 6px 10px;}
-[data-testid="stMetricLabel"] {font-size: 0.80rem;}
-[data-testid="stMetricValue"] {font-size: 1.05rem;}
-h3 {margin-top: 0.4rem;}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-# ============================
-# Constants
-# ============================
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-default_langs = ["DE", "EN", "TR", "FR", "IT", "NL"]
-default_roles = ["Team Manager", "QA", "Ops", "Trainer", "RTA/WFM"]
-
-# ============================
-# Helpers
-# ============================
-def fmt0(x: float) -> str:
-    return f"{x:,.0f}"
-
-def normalize_month(m):
-    """Accept Jan/January/1..12/Excel dates/timestamps."""
-    if m is None:
-        return None
-    try:
-        if pd.isna(m):
-            return None
-    except Exception:
-        pass
-
-    # datetime-like (Timestamp)
-    try:
-        if hasattr(m, "month"):
-            mn = int(m.month)
-            if 1 <= mn <= 12:
-                return MONTHS[mn - 1]
-    except Exception:
-        pass
-
-    # numeric month
-    try:
-        if isinstance(m, (int, float)) and 1 <= int(m) <= 12:
-            return MONTHS[int(m) - 1]
-    except Exception:
-        pass
-
-    s = str(m).strip()
-    full_to_short = {
-        "january": "Jan", "february": "Feb", "march": "Mar", "april": "Apr",
-        "may": "May", "june": "Jun", "july": "Jul", "august": "Aug",
-        "september": "Sep", "october": "Oct", "november": "Nov", "december": "Dec"
+    :root {
+      --ink:    #0d0f14;
+      --paper:  #f5f2eb;
+      --accent: #1a6fff;
+      --green:  #00c471;
+      --yellow: #ffd84d;
+      --muted:  #6b7280;
+      --card:   #ffffff;
+      --border: #e2ddd4;
     }
-    s_lower = s.lower()
-    if s_lower in full_to_short:
-        return full_to_short[s_lower]
 
-    mapping = {x.lower(): x for x in MONTHS}
-    return mapping.get(s_lower, None)
+    html { scroll-behavior: smooth; }
 
-def ensure_storage():
-    """
-    Central truth:
-      st.session_state["data"]["months"][month] = {
-        "inputs": {...},
-        "prod": list of 6 dicts,
-        "oh": list of 5 dicts
+    body {
+      font-family: 'DM Mono', monospace;
+      background: var(--paper);
+      color: var(--ink);
+      overflow-x: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    nav {
+      position: sticky; top: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 2.5rem;
+      background: rgba(245,242,235,0.88);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      z-index: 100;
+    }
+
+    .nav-logo {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 1rem;
+      letter-spacing: -0.02em;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .nav-logo span { color: var(--accent); }
+
+    .nav-links { display: flex; gap: 2rem; list-style: none; }
+    .nav-links a {
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--muted);
+      text-decoration: none;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      transition: color .2s;
+    }
+    .nav-links a:hover { color: var(--ink); }
+
+    .nav-cta {
+      background: var(--ink);
+      color: var(--paper) !important;
+      padding: 0.45rem 1.1rem;
+      border-radius: 4px;
+      transition: background .2s !important;
+    }
+    .nav-cta:hover { background: var(--accent) !important; color: white !important; }
+
+    .hero {
+      position: relative;
+      min-height: 90vh;
+      display: grid;
+      place-items: center;
+      padding: 6rem 2rem 4rem;
+      overflow: hidden;
+    }
+
+    .hero-bg {
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 70% 60% at 80% 20%, rgba(26,111,255,0.07) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 40% at 10% 80%, rgba(0,196,113,0.06) 0%, transparent 50%);
+    }
+
+    .hero-grid {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 48px 48px;
+      opacity: 0.5;
+      mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 30%, transparent 100%);
+    }
+
+    .hero-inner {
+      position: relative;
+      max-width: 860px;
+      text-align: center;
+    }
+
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      font-size: 0.72rem;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      background: var(--yellow);
+      color: var(--ink);
+      padding: 0.35rem 0.9rem;
+      border-radius: 2px;
+      margin-bottom: 1.8rem;
+      opacity: 0;
+      animation: fadeUp 0.6s ease 0.1s forwards;
+    }
+
+    h1 {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: clamp(2.8rem, 7vw, 5.2rem);
+      line-height: 1.0;
+      letter-spacing: -0.04em;
+      margin-bottom: 1.4rem;
+      opacity: 0;
+      animation: fadeUp 0.7s ease 0.25s forwards;
+    }
+
+    h1 .accent { color: var(--accent); }
+    h1 .line2 { display: block; }
+
+    .hero-sub {
+      font-size: 1.05rem;
+      font-weight: 300;
+      color: var(--muted);
+      line-height: 1.7;
+      max-width: 560px;
+      margin: 0 auto 2.5rem;
+      opacity: 0;
+      animation: fadeUp 0.7s ease 0.4s forwards;
+    }
+
+    .hero-actions {
+      display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;
+      opacity: 0;
+      animation: fadeUp 0.7s ease 0.55s forwards;
+    }
+
+    .btn {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.82rem;
+      font-weight: 500;
+      letter-spacing: 0.03em;
+      padding: 0.75rem 1.8rem;
+      border-radius: 4px;
+      text-decoration: none;
+      transition: transform .15s, box-shadow .15s;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
+
+    .btn-primary { background: var(--ink); color: var(--paper); }
+    .btn-primary:hover { background: var(--accent); }
+
+    .btn-outline {
+      background: transparent;
+      color: var(--ink);
+      border: 1.5px solid var(--ink);
+    }
+    .btn-outline:hover { background: var(--ink); color: var(--paper); }
+
+    .stats-bar {
+      background: var(--ink);
+      color: var(--paper);
+      padding: 1.2rem 2.5rem;
+      display: flex;
+      justify-content: center;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    .stat-item {
+      display: flex; flex-direction: column; align-items: center;
+      padding: 0 3rem;
+      border-right: 1px solid rgba(255,255,255,0.1);
+    }
+    .stat-item:last-child { border-right: none; }
+
+    .stat-num {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.6rem;
+      font-weight: 800;
+      color: var(--yellow);
+    }
+    .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.5); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 0.15rem; }
+
+    section { padding: 5rem 2rem; position: relative; }
+    .section-inner { max-width: 1100px; margin: 0 auto; }
+
+    .section-tag {
+      font-size: 0.7rem;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.8rem;
+    }
+
+    h2 {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: clamp(1.8rem, 4vw, 2.8rem);
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      margin-bottom: 1rem;
+    }
+
+    .section-desc {
+      font-size: 0.92rem;
+      color: var(--muted);
+      line-height: 1.8;
+      max-width: 520px;
+    }
+
+    .sheets-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3rem;
+    }
+
+    .sheet-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.6rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform .2s, box-shadow .2s;
+    }
+    .sheet-card:hover { transform: translateY(-3px); box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
+    .sheet-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--card-accent, var(--accent));
+    }
+
+    .sheet-card:nth-child(1) { --card-accent: #1a6fff; }
+    .sheet-card:nth-child(2) { --card-accent: #ffd84d; }
+    .sheet-card:nth-child(3) { --card-accent: #00c471; }
+    .sheet-card:nth-child(4) { --card-accent: #ff6b35; }
+    .sheet-card:nth-child(5) { --card-accent: #9b59b6; }
+    .sheet-card:nth-child(6) { --card-accent: #e74c3c; }
+
+    .sheet-emoji { font-size: 1.6rem; margin-bottom: 0.8rem; }
+    .sheet-name { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; }
+    .sheet-desc { font-size: 0.8rem; color: var(--muted); line-height: 1.65; }
+
+    .colors-section { background: var(--ink); }
+    .colors-section h2, .colors-section .section-tag { color: var(--paper); }
+    .colors-section .section-desc { color: rgba(255,255,255,0.5); }
+
+    .color-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-top: 3rem;
+    }
+
+    .color-card {
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      padding: 1.4rem;
+      display: flex; align-items: flex-start; gap: 1rem;
+    }
+
+    .color-dot { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; margin-top: 2px; }
+    .color-info { flex: 1; }
+    .color-name { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 0.9rem; color: white; margin-bottom: 0.3rem; }
+    .color-meaning { font-size: 0.75rem; color: rgba(255,255,255,0.45); line-height: 1.5; }
+
+    .steps-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin-top: 3rem;
+      max-width: 680px;
+    }
+
+    .step {
+      display: flex; gap: 1.5rem;
+      padding: 1.5rem 0;
+      border-bottom: 1px solid var(--border);
+      opacity: 0;
+      transform: translateX(-20px);
+      transition: opacity .5s, transform .5s;
+    }
+    .step.visible { opacity: 1; transform: none; }
+
+    .step-num {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 2rem;
+      color: var(--border);
+      line-height: 1;
+      flex-shrink: 0;
+      width: 48px;
+      text-align: right;
+    }
+
+    .step-body { flex: 1; }
+    .step-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; }
+    .step-text { font-size: 0.82rem; color: var(--muted); line-height: 1.7; }
+
+    code {
+      background: rgba(26,111,255,0.08);
+      color: var(--accent);
+      padding: 0.15rem 0.45rem;
+      border-radius: 3px;
+      font-size: 0.85em;
+    }
+
+    .tips-section { background: #f0f4ff; }
+
+    .tips-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 1rem;
+      margin-top: 3rem;
+    }
+
+    .tip-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.4rem;
+    }
+
+    .tip-icon { font-size: 1.4rem; margin-bottom: 0.6rem; }
+    .tip-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 0.9rem; margin-bottom: 0.4rem; }
+    .tip-text { font-size: 0.78rem; color: var(--muted); line-height: 1.6; }
+
+    .download-section { background: var(--accent); color: white; text-align: center; }
+    .download-section h2 { color: white; }
+    .download-section .section-desc { color: rgba(255,255,255,0.7); margin: 0 auto 2.5rem; }
+
+    .download-btns { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+
+    .btn-white { background: white; color: var(--accent); }
+    .btn-white:hover { background: var(--paper); }
+
+    .btn-ghost {
+      background: transparent;
+      color: white;
+      border: 1.5px solid rgba(255,255,255,0.5);
+    }
+    .btn-ghost:hover { background: rgba(255,255,255,0.15); }
+
+    footer {
+      background: var(--ink);
+      color: rgba(255,255,255,0.35);
+      text-align: center;
+      padding: 2rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+    }
+    footer a { color: rgba(255,255,255,0.5); text-decoration: none; }
+    footer a:hover { color: white; }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 640px) {
+      nav { padding: 1rem 1.2rem; }
+      .nav-links { display: none; }
+      .stat-item { padding: 0 1.2rem; }
+      .stat-num { font-size: 1.2rem; }
+      section { padding: 3.5rem 1.2rem; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo">📞 <span>CC</span>Budget</div>
+  <ul class="nav-links">
+    <li><a href="#sheets">Sheets</a></li>
+    <li><a href="#quickstart">Quick Start</a></li>
+    <li><a href="#tips">Tips</a></li>
+    <li><a href="#download" class="nav-cta">Download</a></li>
+  </ul>
+</nav>
+
+<section class="hero">
+  <div class="hero-bg"></div>
+  <div class="hero-grid"></div>
+  <div class="hero-inner">
+    <div class="hero-badge">🔥 Free Template — No Sign-up Required</div>
+    <h1>
+      Call Center
+      <span class="line2 accent">Budget &amp; Forecast</span>
+    </h1>
+    <p class="hero-sub">
+      A professional Excel template for call centers — with a Python script to regenerate or customize it. Fill in blue cells, everything else calculates automatically.
+    </p>
+    <div class="hero-actions">
+      <a href="CC_Budget_Template.xlsx" class="btn btn-primary" download>⬇ Download Excel Template</a>
+      <a href="generate_budget.py" class="btn btn-outline" download>⬇ Download Python Script</a>
+    </div>
+  </div>
+</section>
+
+<div class="stats-bar">
+  <div class="stat-item"><span class="stat-num">6</span><span class="stat-label">Sheets</span></div>
+  <div class="stat-item"><span class="stat-num">100%</span><span class="stat-label">Auto-calc</span></div>
+  <div class="stat-item"><span class="stat-num">12</span><span class="stat-label">Months</span></div>
+  <div class="stat-item"><span class="stat-num">Free</span><span class="stat-label">No Cost</span></div>
+</div>
+
+<section id="sheets">
+  <div class="section-inner">
+    <p class="section-tag">What's inside</p>
+    <h2>Six sheets.<br/>One complete picture.</h2>
+    <p class="section-desc">Every sheet is linked — change a headcount number and revenue, costs, and margins update instantly across the whole workbook.</p>
+    <div class="sheets-grid">
+      <div class="sheet-card">
+        <div class="sheet-emoji">📋</div>
+        <div class="sheet-name">Instructions</div>
+        <div class="sheet-desc">Read first. Color coding guide, usage tips, and how each sheet connects to the others.</div>
+      </div>
+      <div class="sheet-card">
+        <div class="sheet-emoji">📊</div>
+        <div class="sheet-name">Assumptions</div>
+        <div class="sheet-desc">Enter unit rates, shrinkage %, salaries, meal cards, and CTC multipliers. These drive everything else.</div>
+      </div>
+      <div class="sheet-card">
+        <div class="sheet-emoji">👥</div>
+        <div class="sheet-name">Headcount Plan</div>
+        <div class="sheet-desc">Enter FTE count per role per month. Overhead roles auto-calculate as a ratio of billable agents.</div>
+      </div>
+      <div class="sheet-card">
+        <div class="sheet-emoji">💰</div>
+        <div class="sheet-name">Salary &amp; Cost</div>
+        <div class="sheet-desc">Auto-calculated salary + CTC cost. Includes gross wages, employer social costs, and meal card totals.</div>
+      </div>
+      <div class="sheet-card">
+        <div class="sheet-emoji">📈</div>
+        <div class="sheet-name">Revenue Forecast</div>
+        <div class="sheet-desc">Auto-calculated billable revenue based on headcount, unit rates, and adjusted productive hours.</div>
+      </div>
+      <div class="sheet-card">
+        <div class="sheet-emoji">📉</div>
+        <div class="sheet-name">P&amp;L Summary</div>
+        <div class="sheet-desc">Full P&amp;L with margin — adds overhead costs here. Shows gross margin $ and % by month and full year.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="colors-section">
+  <div class="section-inner">
+    <p class="section-tag" style="color: rgba(255,255,255,0.4)">Color system</p>
+    <h2>Know what<br/>to touch.</h2>
+    <p class="section-desc">Every cell is color-coded so you always know exactly what to edit and what to leave alone.</p>
+    <div class="color-grid">
+      <div class="color-card">
+        <div class="color-dot" style="background:#1a6fff;"></div>
+        <div class="color-info">
+          <div class="color-name">Blue Text</div>
+          <div class="color-meaning">Input cells — fill these in. These are the only cells you should edit.</div>
+        </div>
+      </div>
+      <div class="color-card">
+        <div class="color-dot" style="background:#333;border:1px solid rgba(255,255,255,0.2);"></div>
+        <div class="color-info">
+          <div class="color-name">Black Text</div>
+          <div class="color-meaning">Auto-calculated formulas — do not edit. These update automatically.</div>
+        </div>
+      </div>
+      <div class="color-card">
+        <div class="color-dot" style="background:#00c471;"></div>
+        <div class="color-info">
+          <div class="color-name">Green Text</div>
+          <div class="color-meaning">Linked from another sheet — do not edit. Values pulled automatically.</div>
+        </div>
+      </div>
+      <div class="color-card">
+        <div class="color-dot" style="background:#ffd84d;"></div>
+        <div class="color-info">
+          <div class="color-name">Yellow Background</div>
+          <div class="color-meaning">Key assumption needing regular review — check these when business conditions change.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="section-inner">
+    <p class="section-tag">No coding needed</p>
+    <h2>Up and running<br/>in minutes.</h2>
+    <div class="steps-list">
+      <div class="step">
+        <div class="step-num">01</div>
+        <div class="step-body">
+          <div class="step-title">Download the Excel template</div>
+          <div class="step-text">Click the download button above to get <code>CC_Budget_Template.xlsx</code>. Open it in Excel or Google Sheets.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <div class="step-body">
+          <div class="step-title">Read the Instructions tab</div>
+          <div class="step-text">Start on the <code>📋 Instructions</code> tab to understand the color coding and sheet structure.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <div class="step-body">
+          <div class="step-title">Fill in the Assumptions sheet</div>
+          <div class="step-text">Enter unit rates, shrinkage %, salaries, meal cards, and CTC multipliers in the <strong>blue cells only</strong>.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">04</div>
+        <div class="step-body">
+          <div class="step-title">Enter headcount by month</div>
+          <div class="step-text">In the <code>👥 Headcount Plan</code> tab, enter your FTE count per role for each month. Overhead auto-fills.</div>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">05</div>
+        <div class="step-body">
+          <div class="step-title">Review results automatically</div>
+          <div class="step-text">Check <code>💰 Salary &amp; Cost</code>, <code>📈 Revenue Forecast</code>, and <code>📉 P&amp;L Summary</code> — all calculated instantly.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tips" class="tips-section">
+  <div class="section-inner">
+    <p class="section-tag">Pro tips</p>
+    <h2>Get the most<br/>out of it.</h2>
+    <div class="tips-grid">
+      <div class="tip-card">
+        <div class="tip-icon">📐</div>
+        <div class="tip-title">Shrinkage is fully adjustable</div>
+        <div class="tip-text">Edit each shrinkage component separately in the Assumptions sheet. Vacation, sick leave, training — each has its own line.</div>
+      </div>
+      <div class="tip-card">
+        <div class="tip-icon">🏗️</div>
+        <div class="tip-title">Overhead auto-calculates</div>
+        <div class="tip-text">Team Leaders, QA, WFM, and Compliance are tracked separately from billable agents and update as headcount changes.</div>
+      </div>
+      <div class="tip-card">
+        <div class="tip-icon">💼</div>
+        <div class="tip-title">CTC multiplier</div>
+        <div class="tip-text">Automatically adds employer social costs on top of gross salary. Just set the multiplier once and it applies everywhere.</div>
+      </div>
+      <div class="tip-card">
+        <div class="tip-icon">🍽️</div>
+        <div class="tip-title">Meal card calculation</div>
+        <div class="tip-text">Calculated as daily rate × working days per month. Update the daily rate in Assumptions and it flows through automatically.</div>
+      </div>
+      <div class="tip-card">
+        <div class="tip-icon">🔮</div>
+        <div class="tip-title">Instant forecasting</div>
+        <div class="tip-text">Change headcount numbers in future months — revenue and costs update instantly. Great for scenario planning.</div>
+      </div>
+      <div class="tip-card">
+        <div class="tip-icon">🐍</div>
+        <div class="tip-title">Customize with Python</div>
+        <div class="tip-text">Download <code>generate_budget.py</code>, edit the config at the top, and run it to regenerate the entire workbook with your LOBs and roles.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="section-inner">
+    <p class="section-tag">Advanced</p>
+    <h2>Customize with<br/>Python.</h2>
+    <p class="section-desc">Want different languages, agent types, or overhead roles? Edit a few lines in the script and regenerate the whole workbook.</p>
+    <div style="margin-top:2.5rem; background: var(--ink); border-radius: 8px; padding: 2rem; font-size: 0.8rem; line-height: 1.9; overflow-x: auto;">
+      <div style="color: rgba(255,255,255,0.3); margin-bottom: 1rem; font-size: 0.7rem; letter-spacing: 0.08em;">INSTALL &amp; RUN</div>
+      <div><span style="color:#ffd84d;">$</span> <span style="color:#00c471;">pip</span> <span style="color:white;">install openpyxl</span></div>
+      <div><span style="color:#ffd84d;">$</span> <span style="color:#00c471;">python</span> <span style="color:white;">generate_budget.py</span></div>
+      <div style="margin-top:1.2rem; color: rgba(255,255,255,0.3); font-size: 0.7rem; letter-spacing: 0.08em;">ADD A NEW LANGUAGE / LOB</div>
+      <div style="margin-top:0.4rem; color: rgba(255,255,255,0.6);">UNIT_RATE_ROWS = [</div>
+      <div style="color: rgba(255,255,255,0.6);">&nbsp;&nbsp;("Spanish – Voice Inbound", "Per Hour", 7.5),</div>
+      <div style="color: #1a6fff;">&nbsp;&nbsp;("French – Chat Inbound",&nbsp;&nbsp; "Per Hour", 6.0),&nbsp;&nbsp;<span style="color:rgba(255,255,255,0.3)"># ← add here</span></div>
+      <div style="color: rgba(255,255,255,0.6);">]</div>
+    </div>
+  </div>
+</section>
+
+<section id="download" class="download-section">
+  <div class="section-inner">
+    <p class="section-tag" style="color:rgba(255,255,255,0.6)">Free download</p>
+    <h2>Ready to build<br/>your budget?</h2>
+    <p class="section-desc">No sign-up. No paywall. Just download and start filling in blue cells.</p>
+    <div class="download-btns">
+      <a href="CC_Budget_Template.xlsx" class="btn btn-white" download>⬇ Excel Template (.xlsx)</a>
+      <a href="generate_budget.py" class="btn btn-ghost" download>⬇ Python Script (.py)</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>CC Budget Tool &mdash; Free call center budget template &mdash; <a href="generate_budget.py">View source</a></p>
+</footer>
+
+<script>
+  const steps = document.querySelectorAll('.step');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((e, i) => {
+      if (e.isIntersecting) {
+        setTimeout(() => e.target.classList.add('visible'), i * 100);
       }
-    """
-    if "data" in st.session_state:
-        return
-
-    st.session_state["data"] = {"months": {}}
-    for m in MONTHS:
-        st.session_state["data"]["months"][m] = {
-            "inputs": {
-                "fx": None,
-                "worked_hours": None,
-                "shrinkage": None,
-            },
-            "prod": [
-                {"lang": default_langs[i], "hc": 0.0, "salary": 0.0, "up": 0.0}
-                for i in range(6)
-            ],
-            "oh": [
-                {"role": default_roles[i], "hc": 0.0, "salary": 0.0}
-                for i in range(5)
-            ],
-        }
-
-def get_month_data(month: str) -> dict:
-    ensure_storage()
-    return st.session_state["data"]["months"][month]
-
-def save_widgets_to_month(month: str):
-    """Save current widget values into central storage for that month."""
-    md = get_month_data(month)
-
-    # month-specific overrides
-    md["inputs"]["fx"] = st.session_state.get("w_fx_month", md["inputs"]["fx"])
-    md["inputs"]["worked_hours"] = st.session_state.get("w_wh_month", md["inputs"]["worked_hours"])
-    md["inputs"]["shrinkage"] = st.session_state.get("w_sh_month", md["inputs"]["shrinkage"])
-
-    # production
-    for i in range(6):
-        md["prod"][i]["lang"] = st.session_state.get(f"w_lang_{i}", md["prod"][i]["lang"])
-        md["prod"][i]["hc"] = float(st.session_state.get(f"w_hc_{i}", md["prod"][i]["hc"]))
-        md["prod"][i]["salary"] = float(st.session_state.get(f"w_sal_{i}", md["prod"][i]["salary"]))
-        md["prod"][i]["up"] = float(st.session_state.get(f"w_up_{i}", md["prod"][i]["up"]))
-
-    # overhead
-    for i in range(5):
-        md["oh"][i]["role"] = st.session_state.get(f"w_role_{i}", md["oh"][i]["role"])
-        md["oh"][i]["hc"] = float(st.session_state.get(f"w_oh_hc_{i}", md["oh"][i]["hc"]))
-        md["oh"][i]["salary"] = float(st.session_state.get(f"w_oh_sal_{i}", md["oh"][i]["salary"]))
-
-def load_month_to_widgets(month: str, defaults: dict):
-    """
-    Load month data into session_state widget keys BEFORE widgets are created.
-    Do NOT call this after widgets exist in the same run.
-    """
-    md = get_month_data(month)
-
-    fx = md["inputs"]["fx"] if md["inputs"]["fx"] is not None else defaults["fx_default"]
-    wh = md["inputs"]["worked_hours"] if md["inputs"]["worked_hours"] is not None else defaults["wh_default"]
-    sh = md["inputs"]["shrinkage"] if md["inputs"]["shrinkage"] is not None else defaults["sh_default"]
-
-    st.session_state["w_fx_month"] = float(fx)
-    st.session_state["w_wh_month"] = float(wh)
-    st.session_state["w_sh_month"] = float(sh)
-
-    for i in range(6):
-        st.session_state[f"w_lang_{i}"] = md["prod"][i]["lang"]
-        st.session_state[f"w_hc_{i}"] = float(md["prod"][i]["hc"])
-        st.session_state[f"w_sal_{i}"] = float(md["prod"][i]["salary"])
-        st.session_state[f"w_up_{i}"] = float(md["prod"][i]["up"])
-
-    for i in range(5):
-        st.session_state[f"w_role_{i}"] = md["oh"][i]["role"]
-        st.session_state[f"w_oh_hc_{i}"] = float(md["oh"][i]["hc"])
-        st.session_state[f"w_oh_sal_{i}"] = float(md["oh"][i]["salary"])
-
-# ============================
-# Sidebar defaults (global)
-# ============================
-st.sidebar.header("Global Inputs")
-
-wh_default = st.sidebar.number_input(
-    "Worked Hours per Agent (Monthly) [default]",
-    value=180.0, step=1.0, min_value=0.0
-)
-sh_default = st.sidebar.slider(
-    "Shrinkage (%) [default]",
-    min_value=0.0, max_value=0.5, value=0.15, step=0.01
-)
-
-st.sidebar.divider()
-st.sidebar.subheader("Global Cost Drivers")
-
-salary_multiplier = st.sidebar.number_input("Salary Multiplier", value=1.70, step=0.05, min_value=0.0)
-
-bonus_pct = st.sidebar.number_input(
-    "Bonus % (of Base Salary)", value=0.10, step=0.01, min_value=0.0, max_value=5.0
-)
-
-bonus_multiplier = st.sidebar.number_input(
-    "Bonus Multiplier", value=1.00, step=0.05, min_value=0.0
-)
-
-meal_card = st.sidebar.number_input(
-    "Meal Card per Agent (Monthly TRY)", value=5850.0, step=100.0, min_value=0.0
-)
-
-st.sidebar.divider()
-currency = st.sidebar.selectbox("Unit Price Currency", ["EUR", "USD"])
-fx_default = st.sidebar.number_input(
-    f"FX Rate (1 {currency} = TRY) [default]",
-    value=38.0 if currency == "EUR" else 35.0,
-    step=0.1,
-    min_value=0.0
-)
-
-defaults_pack = {"wh_default": wh_default, "sh_default": sh_default, "fx_default": fx_default}
-
-# ============================
-# Month selection + controlled save/load
-# ============================
-st.sidebar.divider()
-st.sidebar.subheader("Month Filter")
-
-ensure_storage()
-
-if "selected_month" not in st.session_state:
-    st.session_state["selected_month"] = MONTHS[0]
-if "prev_month" not in st.session_state:
-    st.session_state["prev_month"] = st.session_state["selected_month"]
-
-def on_month_change():
-    prev = st.session_state.get("prev_month", MONTHS[0])
-    new = st.session_state.get("selected_month", MONTHS[0])
-    save_widgets_to_month(prev)
-    st.session_state["pending_reload_month"] = new
-    st.session_state["prev_month"] = new
-    st.rerun()
-
-st.sidebar.selectbox(
-    "Select Month",
-    MONTHS,
-    key="selected_month",
-    on_change=on_month_change
-)
-
-view_mode = st.sidebar.radio(
-    "View",
-    ["Selected Month", "All Months (Trend)"],
-    index=0
-)
-
-selected_month = st.session_state["selected_month"]
-
-# ============================
-# Handle pending reload BEFORE widgets exist
-# ============================
-if st.session_state.get("pending_reload_month"):
-    m = st.session_state.pop("pending_reload_month")
-    load_month_to_widgets(m, defaults_pack)
-    st.session_state["_widgets_loaded"] = m
-    st.session_state["prev_month"] = m
-
-# first-time load
-if st.session_state.get("_widgets_loaded") != selected_month:
-    load_month_to_widgets(selected_month, defaults_pack)
-    st.session_state["_widgets_loaded"] = selected_month
-    st.session_state["prev_month"] = selected_month
-
-# ============================
-# Core calcs
-# ============================
-def calculate_agent_cost(base_salary_try: float) -> float:
-    bonus = base_salary_try * bonus_pct * bonus_multiplier
-    gross = base_salary_try + bonus
-    loaded = gross * salary_multiplier
-    return loaded + meal_card
-
-def compute_from_month_store(month: str):
-    md = get_month_data(month)
-
-    fx = md["inputs"]["fx"] if md["inputs"]["fx"] is not None else fx_default
-    wh = md["inputs"]["worked_hours"] if md["inputs"]["worked_hours"] is not None else wh_default
-    sh = md["inputs"]["shrinkage"] if md["inputs"]["shrinkage"] is not None else sh_default
-    prod_hours = wh * (1 - sh)
-
-    def try_from_currency_month(x: float) -> float:
-        return x * float(fx)
-
-    prod_rows = []
-    total_prod_cost = 0.0
-    total_revenue = 0.0
-
-    for i in range(6):
-        row = md["prod"][i]
-        lang = row["lang"]
-        hc = float(row["hc"])
-        salary = float(row["salary"])
-        up_cur = float(row["up"])
-
-        up_try = try_from_currency_month(up_cur)
-        cost_per = calculate_agent_cost(salary)
-        total_cost = hc * cost_per
-        revenue = hc * prod_hours * up_try
-        margin = revenue - total_cost
-
-        total_prod_cost += total_cost
-        total_revenue += revenue
-
-        prod_rows.append({
-            "Month": month,
-            "Language": lang,
-            "HC": hc,
-            "Base Salary (TRY)": salary,
-            f"Unit Price ({currency})": up_cur,
-            "FX Rate": float(fx),
-            "Worked Hours": float(wh),
-            "Shrinkage": float(sh),
-            "Productive Hours": float(prod_hours),
-            "Unit Price (TRY)": up_try,
-            "Cost/Agent (TRY)": cost_per,
-            "Total Cost (TRY)": total_cost,
-            "Revenue (TRY)": revenue,
-            "Margin (TRY)": margin,
-            "Bonus %": bonus_pct,
-            "Bonus Multiplier": bonus_multiplier,
-            "Salary Multiplier": salary_multiplier,
-            "Meal Card (TRY)": meal_card,
-        })
-
-    oh_rows = []
-    total_oh = 0.0
-    for i in range(5):
-        row = md["oh"][i]
-        role = row["role"]
-        hc = float(row["hc"])
-        salary = float(row["salary"])
-
-        cost_per = calculate_agent_cost(salary) if hc > 0 else 0.0
-        total_cost = hc * cost_per
-        total_oh += total_cost
-
-        oh_rows.append({
-            "Month": month,
-            "Role": role,
-            "HC": hc,
-            "Base Salary (TRY)": salary,
-            "Cost/Head (TRY)": cost_per,
-            "Total Cost (TRY)": total_cost,
-            "Bonus %": bonus_pct,
-            "Bonus Multiplier": bonus_multiplier,
-            "Salary Multiplier": salary_multiplier,
-            "Meal Card (TRY)": meal_card,
-        })
-
-    grand_cost = total_prod_cost + total_oh
-    grand_margin = total_revenue - grand_cost
-    gm = (grand_margin / total_revenue) if total_revenue > 0 else 0.0
-
-    summary_df = pd.DataFrame([{
-        "Month": month,
-        "Total Production Cost (TRY)": total_prod_cost,
-        "Total Overhead Cost (TRY)": total_oh,
-        "Total Revenue (TRY)": total_revenue,
-        "Grand Total Cost (TRY)": grand_cost,
-        "Grand Margin (TRY)": grand_margin,
-        "GM %": gm
-    }])
-
-    return pd.DataFrame(prod_rows), pd.DataFrame(oh_rows), summary_df
-
-# ============================
-# Month-level overrides UI
-# ============================
-st.subheader("Calculated Values")
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Month", selected_month)
-c2.number_input(f"FX for {selected_month} (TRY/{currency})", min_value=0.0, step=0.1, key="w_fx_month")
-c3.number_input(f"Worked Hours for {selected_month}", min_value=0.0, step=1.0, key="w_wh_month")
-c4.slider(f"Shrinkage for {selected_month}", min_value=0.0, max_value=0.5, step=0.01, key="w_sh_month")
-c5.metric("Bonus Mult.", f"{bonus_multiplier:,.2f}")
-
-# Save widgets to store each run
-save_widgets_to_month(selected_month)
-
-# Compute
-prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
-s = summary_df_m.iloc[0]
-
-# ============================
-# Copy month helper
-# ============================
-st.divider()
-with st.expander("📌 Helper: Copy this month to next month", expanded=False):
-    idx = MONTHS.index(selected_month)
-    next_month = MONTHS[idx + 1] if idx < 11 else None
-    if next_month:
-        if st.button(f"Copy {selected_month} → {next_month}"):
-            st.session_state["data"]["months"][next_month] = {
-                "inputs": dict(get_month_data(selected_month)["inputs"]),
-                "prod": [dict(x) for x in get_month_data(selected_month)["prod"]],
-                "oh": [dict(x) for x in get_month_data(selected_month)["oh"]],
-            }
-            st.session_state["pending_reload_month"] = next_month
-            st.rerun()
-    else:
-        st.info("You're on Dec. No next month to copy into.")
-
-# ============================
-# Excel Template + Import
-# ============================
-st.sidebar.divider()
-st.sidebar.subheader("Excel Import / Template")
-
-def build_template_xlsx() -> bytes:
-    inputs_df = pd.DataFrame({
-        "Month": MONTHS,
-        "FX": [fx_default]*12,
-        "WorkedHours": [wh_default]*12,
-        "Shrinkage": [sh_default]*12,
-    })
-
-    prod_rows = []
-    for m in MONTHS:
-        for l in default_langs:
-            prod_rows.append({"Month": m, "Language": l, "HC": 0, "BaseSalaryTRY": 0, "UnitPriceCurrency": 0})
-    prod_df = pd.DataFrame(prod_rows)
-
-    oh_rows = []
-    for m in MONTHS:
-        for r in default_roles:
-            oh_rows.append({"Month": m, "Role": r, "HC": 0, "BaseSalaryTRY": 0})
-    oh_df = pd.DataFrame(oh_rows)
-
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as w:
-        inputs_df.to_excel(w, sheet_name="Inputs", index=False)
-        prod_df.to_excel(w, sheet_name="Production", index=False)
-        oh_df.to_excel(w, sheet_name="Overhead", index=False)
-    return out.getvalue()
-
-st.sidebar.download_button(
-    "⬇️ Download Excel Template",
-    data=build_template_xlsx(),
-    file_name="budget_template.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-
-st.divider()
-st.subheader("Import from Excel")
-uploaded = st.file_uploader("Upload filled template (.xlsx)", type=["xlsx"])
-
-def apply_import_xlsx(file):
-    xls = pd.ExcelFile(file)
-    required = {"Inputs", "Production", "Overhead"}
-    if not required.issubset(set(xls.sheet_names)):
-        missing = required - set(xls.sheet_names)
-        raise ValueError(f"Missing sheet(s): {', '.join(missing)}")
-
-    inputs_df = pd.read_excel(xls, "Inputs")
-    prod_df = pd.read_excel(xls, "Production")
-    oh_df = pd.read_excel(xls, "Overhead")
-
-    # month overrides
-    for _, row in inputs_df.iterrows():
-        m = normalize_month(row.get("Month"))
-        if not m:
-            continue
-        md = get_month_data(m)
-
-        fx = row.get("FX")
-        if pd.notna(fx):
-            md["inputs"]["fx"] = float(fx)
-
-        wh = row.get("WorkedHours")
-        if pd.notna(wh):
-            md["inputs"]["worked_hours"] = float(wh)
-
-        sh = row.get("Shrinkage")
-        if pd.notna(sh):
-            shv = float(sh)
-            if shv > 1:
-                shv = shv / 100.0  # fix 15 -> 0.15
-            md["inputs"]["shrinkage"] = shv
-
-    # production
-    lang_to_idx = {x.upper(): i for i, x in enumerate(default_langs)}
-    for _, row in prod_df.iterrows():
-        m = normalize_month(row.get("Month"))
-        if not m:
-            continue
-        lang = str(row.get("Language", "")).strip().upper()
-        if lang not in lang_to_idx:
-            continue
-        i = lang_to_idx[lang]
-        md = get_month_data(m)
-
-        if pd.notna(row.get("HC")):
-            md["prod"][i]["hc"] = float(row.get("HC"))
-        if pd.notna(row.get("BaseSalaryTRY")):
-            md["prod"][i]["salary"] = float(row.get("BaseSalaryTRY"))
-        if pd.notna(row.get("UnitPriceCurrency")):
-            md["prod"][i]["up"] = float(row.get("UnitPriceCurrency"))
-
-        md["prod"][i]["lang"] = default_langs[i]  # keep canonical
-
-    # overhead
-    role_to_idx = {x.strip().lower(): i for i, x in enumerate(default_roles)}
-    for _, row in oh_df.iterrows():
-        m = normalize_month(row.get("Month"))
-        if not m:
-            continue
-        role = str(row.get("Role", "")).strip().lower()
-        if role not in role_to_idx:
-            continue
-        i = role_to_idx[role]
-        md = get_month_data(m)
-
-        if pd.notna(row.get("HC")):
-            md["oh"][i]["hc"] = float(row.get("HC"))
-        if pd.notna(row.get("BaseSalaryTRY")):
-            md["oh"][i]["salary"] = float(row.get("BaseSalaryTRY"))
-        md["oh"][i]["role"] = default_roles[i]  # keep canonical
-
-    # Trigger safe reload
-    st.session_state["pending_reload_month"] = selected_month
-
-if uploaded is not None:
-    colA, colB = st.columns([1, 2])
-    with colA:
-        if st.button("✅ Apply import"):
-            try:
-                apply_import_xlsx(uploaded)
-                st.success("Import applied. Reloading…")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Import failed: {e}")
-    with colB:
-        st.info("Tip: Month can be Jan/January/1..12 or an Excel date.")
-
-# ============================
-# Production Blocks UI
-# ============================
-st.divider()
-st.subheader("Production Blocks")
-
-for i in range(6):
-    with st.expander(f"#{i+1} Production — {default_langs[i]}  ({selected_month})", expanded=(i == 0)):
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.text_input(f"Language Label #{i+1}", key=f"w_lang_{i}")
-        with col2:
-            st.number_input("HC", min_value=0.0, step=1.0, key=f"w_hc_{i}")
-        with col3:
-            st.number_input("Base Salary (TRY)", min_value=0.0, step=500.0, key=f"w_sal_{i}")
-        with col4:
-            st.number_input(f"Unit Price ({currency})", min_value=0.0, step=0.1, key=f"w_up_{i}")
-
-# ============================
-# Overhead UI
-# ============================
-st.divider()
-st.subheader("Overhead")
-
-for i in range(5):
-    with st.expander(f"Overhead #{i+1}  ({selected_month})", expanded=(i == 0)):
-        oh1, oh2, oh3 = st.columns(3)
-        with oh1:
-            st.text_input("Role", key=f"w_role_{i}")
-        with oh2:
-            st.number_input("OH HC", min_value=0.0, step=1.0, key=f"w_oh_hc_{i}")
-        with oh3:
-            st.number_input("Base Salary (TRY)", min_value=0.0, step=500.0, key=f"w_oh_sal_{i}")
-
-# Save edits and recompute
-save_widgets_to_month(selected_month)
-prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
-s = summary_df_m.iloc[0]
-
-# ============================
-# Final Summary
-# ============================
-st.divider()
-st.subheader("Final Summary")
-
-# --- NEW: Selected Month Revenue (very clear) ---
-st.markdown("### 📌 Selected Month Revenue")
-fx_effective = get_month_data(selected_month)["inputs"]["fx"] if get_month_data(selected_month)["inputs"]["fx"] is not None else fx_default
-total_rev_try = float(s["Total Revenue (TRY)"])
-total_rev_cur = total_rev_try / float(fx_effective) if fx_effective > 0 else 0.0
-r1, r2, r3 = st.columns(3)
-r1.metric(f"Revenue ({selected_month}) — TRY", fmt0(total_rev_try))
-r2.metric(f"Revenue ({selected_month}) — {currency}", f"{total_rev_cur:,.0f}")
-r3.metric(f"FX used ({selected_month})", f"{fx_effective:,.2f} TRY/{currency}")
-
-# --- Original summary metrics ---
-s1, s2, s3, s4 = st.columns(4)
-s1.metric("Total Production Cost (TRY)", fmt0(s["Total Production Cost (TRY)"]))
-s2.metric("Total Overhead Cost (TRY)", fmt0(s["Total Overhead Cost (TRY)"]))
-s3.metric("Total Revenue (TRY)", fmt0(s["Total Revenue (TRY)"]))
-s4.metric("GM %", f"{s['GM %']*100:.1f}%")
-
-t1, t2, t3 = st.columns(3)
-t1.metric("Grand Total Cost (TRY)", fmt0(s["Grand Total Cost (TRY)"]))
-t2.metric("Grand Margin (TRY)", fmt0(s["Grand Margin (TRY)"]))
-t3.metric("Currency + FX", f"{currency} @ {fx_effective:,.2f} TRY")
-
-# --- NEW: Revenue breakdown by language ---
-st.markdown("### Revenue breakdown by language (Selected Month)")
-rev_by_lang = (
-    prod_df_m.groupby("Language", as_index=False)[["Revenue (TRY)", "Total Cost (TRY)", "Margin (TRY)"]]
-    .sum()
-    .sort_values("Revenue (TRY)", ascending=False)
-)
-st.dataframe(rev_by_lang, use_container_width=True)
-
-# ============================
-# Charts
-# ============================
-st.divider()
-st.subheader("Summary Graphics")
-
-summary_bar = pd.DataFrame(
-    {"TRY": [s["Total Revenue (TRY)"], s["Grand Total Cost (TRY)"], s["Grand Margin (TRY)"]]},
-    index=["Revenue", "Total Cost", "Margin"]
-)
-st.bar_chart(summary_bar)
-
-gm_df = pd.DataFrame({"GM%": [s["GM %"] * 100.0]}, index=["GM %"])
-st.bar_chart(gm_df)
-
-if view_mode == "All Months (Trend)":
-    all_sum = []
-    for m in MONTHS:
-        _, _, sm = compute_from_month_store(m)
-        all_sum.append(sm)
-    all_sum_df = pd.concat(all_sum, ignore_index=True)
-
-    st.markdown("#### All Months Trend")
-    trend_df = all_sum_df.set_index("Month")[["Total Revenue (TRY)", "Grand Total Cost (TRY)", "Grand Margin (TRY)"]]
-    st.line_chart(trend_df)
-
-    gm_trend = (all_sum_df.set_index("Month")[["GM %"]] * 100.0).rename(columns={"GM %": "GM%"})
-    st.line_chart(gm_trend)
-
-# ============================
-# Tables
-# ============================
-with st.expander("Show detailed tables (Selected Month)"):
-    st.markdown("#### Production")
-    st.dataframe(prod_df_m, use_container_width=True)
-    st.markdown("#### Overhead")
-    st.dataframe(oh_df_m, use_container_width=True)
-
-# ============================
-# Export
-# ============================
-st.divider()
-st.subheader("Export")
-
-def build_excel_export() -> bytes:
-    inputs_df = pd.DataFrame([{
-        "Selected Month": selected_month,
-        "Worked Hours (default)": wh_default,
-        "Shrinkage (default)": sh_default,
-        "Salary Multiplier": salary_multiplier,
-        "Bonus %": bonus_pct,
-        "Bonus Multiplier": bonus_multiplier,
-        "Meal Card (TRY)": meal_card,
-        "Currency": currency,
-        "FX (default)": fx_default,
-    }])
-
-    all_sum = []
-    for m in MONTHS:
-        _, _, sm = compute_from_month_store(m)
-        all_sum.append(sm)
-    all_months_summary_df = pd.concat(all_sum, ignore_index=True)
-
-    out = BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as writer:
-        inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
-        prod_df_m.to_excel(writer, sheet_name=f"Prod_{selected_month}", index=False)
-        oh_df_m.to_excel(writer, sheet_name=f"OH_{selected_month}", index=False)
-        summary_df_m.to_excel(writer, sheet_name=f"Summary_{selected_month}", index=False)
-        all_months_summary_df.to_excel(writer, sheet_name="Summary_AllMonths", index=False)
-
-    return out.getvalue()
-
-excel_bytes = build_excel_export()
-
-st.download_button(
-    label="⬇️ Download Excel (.xlsx)",
-    data=excel_bytes,
-    file_name=f"budget_app_export_{selected_month}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-with st.expander("Show formula details"):
-    st.write(
-        """
-**Cost per head (TRY)** =
-(base_salary + base_salary×bonus_pct×bonus_multiplier) × salary_multiplier + meal_card
-
-**Revenue (TRY)** =
-HC × productive_hours × (unit_price_in_currency × FX)
-
-**GM%** =
-(Revenue − Total Cost) / Revenue
-        """
-    )# =====================================================
-# Month-over-Month Analysis (SAFE – READ ONLY)
-# =====================================================
-st.divider()
-st.subheader("📊 Month-over-Month Analysis")
-
-# Select comparison month (read-only)
-idx = MONTHS.index(selected_month)
-default_prev = MONTHS[idx - 1] if idx > 0 else MONTHS[0]
-
-compare_month = st.selectbox(
-    "Compare with month",
-    MONTHS,
-    index=MONTHS.index(default_prev),
-    key="mom_compare_month_readonly"
-)
-
-# PURE READ — no writes
-cur_sum = compute_from_month_store(selected_month)[2].iloc[0]
-prev_sum = compute_from_month_store(compare_month)[2].iloc[0]
-
-rev_delta = cur_sum["Total Revenue (TRY)"] - prev_sum["Total Revenue (TRY)"]
-cost_delta = cur_sum["Grand Total Cost (TRY)"] - prev_sum["Grand Total Cost (TRY)"]
-margin_delta = cur_sum["Grand Margin (TRY)"] - prev_sum["Grand Margin (TRY)"]
-gm_delta_pp = (cur_sum["GM %"] - prev_sum["GM %"]) * 100
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Revenue Δ (TRY)", fmt0(rev_delta))
-c2.metric("Cost Δ (TRY)", fmt0(cost_delta))
-c3.metric("Margin Δ (TRY)", fmt0(margin_delta))
-c4.metric("GM Δ (pp)", f"{gm_delta_pp:+.2f}")
-
-bridge_df = pd.DataFrame([
-    {"Driver": "Revenue change", "Impact (TRY)": rev_delta},
-    {"Driver": "Cost change", "Impact (TRY)": -cost_delta},
-    {"Driver": "Net Margin impact", "Impact (TRY)": margin_delta},
-])
-
-st.markdown("### Margin Bridge")
-st.dataframe(bridge_df, use_container_width=True)
-
+    });
+  }, { threshold: 0.2 });
+  steps.forEach(s => observer.observe(s));
+</script>
+
+</body>
+</html>
