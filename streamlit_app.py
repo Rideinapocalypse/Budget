@@ -1,3 +1,4 @@
+
 """
 CC Budget & Forecast Tool - Streamlit App
 Run with: streamlit run streamlit_app.py
@@ -8,6 +9,8 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 import copy
+import urllib.request
+import json
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -40,6 +43,28 @@ if "blocks" not in st.session_state:
     st.session_state.blocks = {m: [] for m in MONTHS}
 if "active_month" not in st.session_state:
     st.session_state.active_month = "Jan"
+
+@st.cache_data(ttl=300)  # cache 5 minutes
+def fetch_live_fx():
+    """Fetch live EUR/TRY rate from open.er-api.com (free, no key needed)."""
+    try:
+        url = "https://open.er-api.com/v6/latest/EUR"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read())
+        rate = data["rates"]["TRY"]
+        return round(rate, 2), True
+    except Exception:
+        return 38.0, False  # fallback
+
+@st.cache_data(ttl=300)
+def fetch_live_fx():
+    try:
+        url = "https://open.er-api.com/v6/latest/EUR"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read())
+        return round(data["rates"]["TRY"], 2), True
+    except Exception:
+        return 38.0, False
 
 def fmt_eur(v): return f"€{v:,.0f}"
 def fmt_try(v): return f"₺{v:,.0f}"
@@ -91,58 +116,55 @@ def set_widths(ws, widths):
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-# ── Template builder ──────────────────────────────────────────
+# ── Template builder (single sheet) ─────────────────────────
 def build_template(gh, gs, gfx, gctc, gbp, gm):
     wb = Workbook(); wb.remove(wb.active)
 
-    # Instructions
-    wi = wb.create_sheet("Instructions"); set_widths(wi, [40, 65])
-    wi["A1"].value = "CC Budget Tool - Import Template"
-    wi["A1"].font  = Font(name="Calibri", bold=True, size=14, color="1F4E79")
-    wi["A2"].value = "Fill in the BLUE cells in each month sheet, then import this file."
-    wi["A2"].font  = Font(name="Calibri", italic=True, color="444444", size=10)
-    steps = [
-        ("STEP 1", "Open the Settings sheet and update global values (FX, shrinkage, CTC, etc.)"),
-        ("STEP 2", "Go to each month tab (Jan, Feb, ..., Dec)"),
-        ("STEP 3", "Fill BLUE cells: Language, HC, Base Salary, Unit Price"),
-        ("STEP 4", "Optionally override Shrinkage %, FX Rate, or Hours per block (leave blank = global)"),
-        ("STEP 5", "Save the file and import it using the sidebar uploader in the app"),
-    ]
-    for ri, (s, d) in enumerate(steps, start=4):
-        hdr(wi, ri, 1, s); note(wi, ri, 2, d)
-    wcell(wi, 10, 1, "COLOR GUIDE", bold=True, bg="FFFACD", fg="7B4F00")
-    inp( wi, 11, 1, "Blue cells"); note(wi, 11, 2, "Fill these in - your input data")
-    note(wi, 12, 1, "Grey italic"); note(wi, 12, 2, "Leave blank to inherit the global default")
-
-    # Settings
-    ws = wb.create_sheet("Settings"); set_widths(ws, [35, 22])
-    hdr(ws,1,1,"Setting"); hdr(ws,1,2,"Value")
+    # ── Settings sheet ────────────────────────────────────────
+    ws_s = wb.create_sheet("Settings"); set_widths(ws_s, [35, 22])
+    hdr(ws_s,1,1,"Setting"); hdr(ws_s,1,2,"Value")
     for ri,(lbl,val) in enumerate([
         ("Worked Hours/Agent/Month", gh), ("Shrinkage %", gs),
         ("FX Rate (EUR=TRY)", gfx), ("CTC Multiplier", gctc),
         ("Bonus % of Base", gbp), ("Meal Card (TRY/mo)", gm),
     ], start=2):
-        wcell(ws,ri,1,lbl); inp(ws,ri,2,val,fmt="#,##0.00")
+        wcell(ws_s,ri,1,lbl); inp(ws_s,ri,2,val,fmt="#,##0.00")
 
-    # Month sheets
-    col_hdrs  = ["Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
+    # ── Single data sheet with all months ────────────────────
+    ws = wb.create_sheet("Budget Data")
+    set_widths(ws, [10, 18, 10, 22, 22, 24, 18, 22])
+
+    col_hdrs  = ["Month","Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
                  "Shrinkage Override","FX Override","Hours Override"]
-    col_hints = ["e.g. DE, EN, TR","agents","monthly gross TRY","billable EUR/hr",
+    col_hints = ["Jan/Feb/etc","e.g. DE, EN, TR","agents","monthly gross TRY","billable EUR/hr",
                  "blank=global","blank=global","blank=global"]
-    col_ws    = [18, 10, 22, 22, 24, 18, 22]
+
+    # Title
+    ws["A1"].value = "CC Budget Tool - Data Template"
+    ws["A1"].font  = Font(name="Calibri", bold=True, size=13, color="1F4E79")
+    ws["A2"].value = "Fill in BLUE cells below. Month column must match exactly: Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec"
+    ws["A2"].font  = Font(name="Calibri", italic=True, color="444444", size=10)
+
+    # Header row
+    for ci, h in enumerate(col_hdrs, 1): hdr(ws, 3, ci, h)
+    # Hint row
+    for ci, ht in enumerate(col_hints, 1): note(ws, 4, ci, ht)
+
+    # Pre-fill existing blocks grouped by month, else 3 blank rows per month
+    ri = 5
     for m in MONTHS:
-        ws = wb.create_sheet(m); set_widths(ws, col_ws)
-        for ci, h in enumerate(col_hdrs, 1): hdr(ws, 1, ci, h)
-        for ci, ht in enumerate(col_hints, 1): note(ws, 2, ci, ht)
-        rows = st.session_state.blocks.get(m,[]) or [
-            {"lang":"","hc":0,"salary":0,"unit_price":0,
-             "shrink_override":None,"fx_override":None,"hours_override":None}]*3
-        for ri, b in enumerate(rows, start=3):
-            vals = [b.get("lang",""), b.get("hc",0), b.get("salary",0), b.get("unit_price",0),
+        existing = st.session_state.blocks.get(m, [])
+        rows = existing or [{"lang":"","hc":0,"salary":0,"unit_price":0,
+                             "shrink_override":None,"fx_override":None,"hours_override":None}]
+        for b in rows:
+            vals = [m, b.get("lang",""), b.get("hc",0), b.get("salary",0), b.get("unit_price",0),
                     b["shrink_override"] if b.get("shrink_override") is not None else "",
                     b["fx_override"]     if b.get("fx_override")     is not None else "",
                     b["hours_override"]  if b.get("hours_override")  is not None else ""]
             for ci, v in enumerate(vals, 1): inp(ws, ri, ci, v)
+            ri += 1
+        # blank separator row between months
+        ri += 1
 
     buf = BytesIO(); wb.save(buf); buf.seek(0); return buf.getvalue()
 
@@ -216,7 +238,13 @@ with st.sidebar:
     st.markdown('<div class="section-title">Global Inputs</div>', unsafe_allow_html=True)
     g_hours  = st.number_input("Worked Hours / Agent / Month", value=180, step=1, min_value=1)
     g_shrink = st.slider("Shrinkage % (default)", 0.0, 0.5, 0.15, 0.01, format="%.0f%%")
-    g_fx     = st.number_input("FX Rate (1 EUR = TRY)", value=38.0, step=0.5, min_value=0.1)
+
+    live_fx, fx_ok = fetch_live_fx()
+    if fx_ok:
+        st.caption(f"🟢 Live EUR/TRY: **{live_fx}** (auto-fetched, editable below)")
+    else:
+        st.caption("🔴 Could not fetch live rate — using fallback")
+    g_fx = st.number_input("FX Rate (1 EUR = TRY)", value=live_fx, step=0.5, min_value=0.1)
 
     st.divider()
     st.markdown('<div class="section-title">Global Cost Drivers</div>', unsafe_allow_html=True)
@@ -252,18 +280,22 @@ with st.sidebar:
     if uploaded:
         try:
             xls = pd.ExcelFile(uploaded)
+            def sf(v):
+                try: return float(v) if str(v).strip() not in ("","nan") else None
+                except: return None
+
             loaded = 0
-            for m in MONTHS:
-                if m not in xls.sheet_names: continue
-                df_m = pd.read_excel(xls, sheet_name=m)
-                if "HC" in df_m.columns:
-                    df_m = df_m[pd.to_numeric(df_m["HC"], errors="coerce").notna()]
-                blocks = []
-                for _, row in df_m.iterrows():
-                    def sf(v):
-                        try: return float(v) if str(v).strip() not in ("","nan") else None
-                        except: return None
-                    blocks.append({
+            # Support both old multi-sheet format and new single-sheet format
+            if "Budget Data" in xls.sheet_names:
+                # New single-sheet format
+                df_all = pd.read_excel(xls, sheet_name="Budget Data", header=2)
+                df_all.columns = [str(c).strip() for c in df_all.columns]
+                df_all = df_all[pd.to_numeric(df_all.get("HC", pd.Series()), errors="coerce").notna()]
+                new_blocks = {m: [] for m in MONTHS}
+                for _, row in df_all.iterrows():
+                    m = str(row.get("Month","")).strip()
+                    if m not in MONTHS: continue
+                    new_blocks[m].append({
                         "lang":            str(row.get("Language","")).strip() if pd.notna(row.get("Language","")) else "",
                         "hc":              int(float(row["HC"])) if pd.notna(row.get("HC")) else 0,
                         "salary":          float(row.get("Base Salary (TRY)",0)) if pd.notna(row.get("Base Salary (TRY)")) else 0,
@@ -272,9 +304,29 @@ with st.sidebar:
                         "fx_override":     sf(row.get("FX Override","")),
                         "hours_override":  sf(row.get("Hours Override","")),
                     })
-                st.session_state.blocks[m] = blocks
-                loaded += len(blocks)
-            st.success(f"Imported {loaded} blocks across all months!")
+                    loaded += 1
+                st.session_state.blocks = new_blocks
+            else:
+                # Legacy per-month sheet format
+                for m in MONTHS:
+                    if m not in xls.sheet_names: continue
+                    df_m = pd.read_excel(xls, sheet_name=m)
+                    if "HC" in df_m.columns:
+                        df_m = df_m[pd.to_numeric(df_m["HC"], errors="coerce").notna()]
+                    blocks = []
+                    for _, row in df_m.iterrows():
+                        blocks.append({
+                            "lang":            str(row.get("Language","")).strip() if pd.notna(row.get("Language","")) else "",
+                            "hc":              int(float(row["HC"])) if pd.notna(row.get("HC")) else 0,
+                            "salary":          float(row.get("Base Salary (TRY)",0)) if pd.notna(row.get("Base Salary (TRY)")) else 0,
+                            "unit_price":      float(row.get("Unit Price (EUR/hr)",0)) if pd.notna(row.get("Unit Price (EUR/hr)")) else 0,
+                            "shrink_override": sf(row.get("Shrinkage Override","")),
+                            "fx_override":     sf(row.get("FX Override","")),
+                            "hours_override":  sf(row.get("Hours Override","")),
+                        })
+                    st.session_state.blocks[m] = blocks
+                    loaded += len(blocks)
+            st.success(f"✅ Imported {loaded} blocks across all months!")
             st.rerun()
         except Exception as e:
             st.error(f"Import failed: {e}")
