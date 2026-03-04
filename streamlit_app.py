@@ -761,50 +761,156 @@ for m in MONTHS:
     month_data[m] = mt
     for k in fy: fy[k] += mt[k]
 
-pnl_eur = {"Line Item": ["Revenue (EUR)","  Prod. Cost (EUR)","  Backfill Cost (EUR)","Total Cost (EUR)","Gross Margin (EUR)","Margin %","HC","Attrition (-)","Backfill HC","Net HC"]}
-pnl_try = {"Line Item": ["Revenue (TRY)","  Prod. Cost (TRY)","  Backfill Cost (TRY)","Total Cost (TRY)","Gross Margin (TRY)","Margin %","HC","Attrition (-)","Backfill HC","Net HC"]}
+LINE_ITEMS = [
+    "Revenue",
+    "  Prod. Cost",
+    "  Backfill Cost",
+    "  TM Cost",
+    "  QM Cost",
+    "  OM Cost",
+    "Total Cost",
+    "Gross Margin",
+    "Margin %",
+    "Break-even €/hr",
+    "Avg Selling €/hr",
+    "Prod HC",
+    "TM HC",
+    "QM HC",
+    "OM HC",
+    "Attrition (-)",
+    "Backfill HC",
+    "Net HC",
+    "Billable Hrs",
+    "Backfill Hrs",
+    "Total Produced Hrs",
+]
+N = len(LINE_ITEMS)
+
+pnl_eur = {"Line Item": LINE_ITEMS}
+pnl_try = {"Line Item": LINE_ITEMS}
+
+fy_sums = {k: 0.0 for k in ["rev","rev_try","cost","cost_try",
+                              "cost_excl_backfill","backfill_cost_eur","backfill_cost_try",
+                              "oh_cost_eur","oh_cost_try","margin","margin_try",
+                              "hrs_billable","backfill_hrs","hrs"]}
+fy_oh = {"TM":{"cost_eur":0,"cost_try":0,"hc":0},
+         "QM":{"cost_eur":0,"cost_try":0,"hc":0},
+         "OM":{"cost_eur":0,"cost_try":0,"hc":0}}
+
 for m in MONTHS:
     mt = month_data[m]
-    prod_cost_try = mt["cost_try"] - mt["backfill_cost_try"]
-    pnl_eur[m] = [
-        fmt_eur(mt["rev"]),
-        fmt_eur(mt["cost_excl_backfill"]),
-        fmt_eur(mt["backfill_cost_eur"]),
-        fmt_eur(mt["cost"]),
-        fmt_eur(mt["margin"]),
-        fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—",
-        int(mt["hc"]), f'-{mt["attrition_hc"]:.2f}', f'{mt["backfill_hc"]:.2f}', f'{mt["net_hc"]:.2f}',
+    for k in fy_sums:
+        fy_sums[k] += mt.get(k, 0)
+    for role in ("TM","QM","OM"):
+        fy_oh[role]["cost_eur"] += mt["oh"][role]["cost_eur"]
+        fy_oh[role]["cost_try"] += mt["oh"][role]["cost_try"]
+        fy_oh[role]["hc"]       += mt["oh"][role]["hc"]
+
+    avg_up_m   = mt["rev"] / mt["hrs_billable"] if mt["hrs_billable"] else 0
+    prod_c_try = mt["cost_try"] - mt["backfill_cost_try"] - mt["oh_cost_try"]
+
+    def row_eur(mt=mt, avg_up_m=avg_up_m):
+        return [
+            fmt_eur(mt["rev"]),
+            fmt_eur(mt["cost_excl_backfill"]),
+            fmt_eur(mt["backfill_cost_eur"]),
+            fmt_eur(mt["oh"]["TM"]["cost_eur"]),
+            fmt_eur(mt["oh"]["QM"]["cost_eur"]),
+            fmt_eur(mt["oh"]["OM"]["cost_eur"]),
+            fmt_eur(mt["cost"]),
+            fmt_eur(mt["margin"]),
+            fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—",
+            f'€{mt["breakeven_up"]:.2f}',
+            f'€{avg_up_m:.2f}',
+            f'{mt["hc"]:.1f}',
+            f'{mt["oh"]["TM"]["hc"]:.2f}',
+            f'{mt["oh"]["QM"]["hc"]:.2f}',
+            f'{mt["oh"]["OM"]["hc"]:.2f}',
+            f'{mt["attrition_hc"]:.2f}',
+            f'{mt["backfill_hc"]:.2f}',
+            f'{mt["net_hc"]:.2f}',
+            f'{mt["hrs_billable"]:,.0f}',
+            f'{mt["backfill_hrs"]:,.0f}',
+            f'{mt["hrs"]:,.0f}',
+        ]
+
+    def row_try(mt=mt, prod_c_try=prod_c_try, avg_up_m=avg_up_m):
+        return [
+            fmt_try(mt["rev_try"]),
+            fmt_try(prod_c_try),
+            fmt_try(mt["backfill_cost_try"]),
+            fmt_try(mt["oh"]["TM"]["cost_try"]),
+            fmt_try(mt["oh"]["QM"]["cost_try"]),
+            fmt_try(mt["oh"]["OM"]["cost_try"]),
+            fmt_try(mt["cost_try"]),
+            fmt_try(mt["margin_try"]),
+            fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—",
+            f'€{mt["breakeven_up"]:.2f}',
+            f'€{avg_up_m:.2f}',
+            f'{mt["hc"]:.1f}',
+            f'{mt["oh"]["TM"]["hc"]:.2f}',
+            f'{mt["oh"]["QM"]["hc"]:.2f}',
+            f'{mt["oh"]["OM"]["hc"]:.2f}',
+            f'{mt["attrition_hc"]:.2f}',
+            f'{mt["backfill_hc"]:.2f}',
+            f'{mt["net_hc"]:.2f}',
+            f'{mt["hrs_billable"]:,.0f}',
+            f'{mt["backfill_hrs"]:,.0f}',
+            f'{mt["hrs"]:,.0f}',
+        ]
+
+    r_e = row_eur(); r_t = row_try()
+    assert len(r_e) == N, f"EUR row {m}: {len(r_e)} != {N}"
+    assert len(r_t) == N, f"TRY row {m}: {len(r_t)} != {N}"
+    pnl_eur[m] = r_e
+    pnl_try[m] = r_t
+
+# Full Year totals
+fy_be     = fy_sums["cost"]     / fy_sums["hrs_billable"] if fy_sums["hrs_billable"] else 0
+fy_avg_up = fy_sums["rev"]      / fy_sums["hrs_billable"] if fy_sums["hrs_billable"] else 0
+fy_prod_c_try = fy_sums["cost_try"] - fy_sums["backfill_cost_try"] - fy_sums["oh_cost_try"]
+
+def fy_row_eur():
+    return [
+        fmt_eur(fy_sums["rev"]),
+        fmt_eur(fy_sums["cost_excl_backfill"]),
+        fmt_eur(fy_sums["backfill_cost_eur"]),
+        fmt_eur(fy_oh["TM"]["cost_eur"]),
+        fmt_eur(fy_oh["QM"]["cost_eur"]),
+        fmt_eur(fy_oh["OM"]["cost_eur"]),
+        fmt_eur(fy_sums["cost"]),
+        fmt_eur(fy_sums["margin"]),
+        fmt_pct(fy_sums["margin"]/fy_sums["rev"]) if fy_sums["rev"] else "—",
+        f'€{fy_be:.2f}', f'€{fy_avg_up:.2f}',
+        "","","","","","","",
+        f'{fy_sums["hrs_billable"]:,.0f}',
+        f'{fy_sums["backfill_hrs"]:,.0f}',
+        f'{fy_sums["hrs"]:,.0f}',
     ]
-    pnl_try[m] = [
-        fmt_try(mt["rev_try"]),
-        fmt_try(prod_cost_try),
-        fmt_try(mt["backfill_cost_try"]),
-        fmt_try(mt["cost_try"]),
-        fmt_try(mt["margin_try"]),
-        fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—",
-        int(mt["hc"]), f'-{mt["attrition_hc"]:.2f}', f'{mt["backfill_hc"]:.2f}', f'{mt["net_hc"]:.2f}',
+
+def fy_row_try():
+    return [
+        fmt_try(fy_sums["rev_try"]),
+        fmt_try(fy_prod_c_try),
+        fmt_try(fy_sums["backfill_cost_try"]),
+        fmt_try(fy_oh["TM"]["cost_try"]),
+        fmt_try(fy_oh["QM"]["cost_try"]),
+        fmt_try(fy_oh["OM"]["cost_try"]),
+        fmt_try(fy_sums["cost_try"]),
+        fmt_try(fy_sums["margin_try"]),
+        fmt_pct(fy_sums["margin_try"]/fy_sums["rev_try"]) if fy_sums["rev_try"] else "—",
+        f'€{fy_be:.2f}', f'€{fy_avg_up:.2f}',
+        "","","","","","","",
+        f'{fy_sums["hrs_billable"]:,.0f}',
+        f'{fy_sums["backfill_hrs"]:,.0f}',
+        f'{fy_sums["hrs"]:,.0f}',
     ]
-fy_prod_cost_try = fy["cost_try"] - sum(month_data[m]["backfill_cost_try"] for m in MONTHS)
-fy_backfill_eur  = sum(month_data[m]["backfill_cost_eur"] for m in MONTHS)
-fy_backfill_try  = sum(month_data[m]["backfill_cost_try"] for m in MONTHS)
-fy_excl          = sum(month_data[m]["cost_excl_backfill"] for m in MONTHS)
-fy_hrs_bill  = sum(month_data[m]["hrs_billable"] for m in MONTHS)
-fy_hrs_bf    = sum(month_data[m]["backfill_hrs"] for m in MONTHS)
-fy_hrs_tot   = sum(month_data[m]["hrs"] for m in MONTHS)
-fy_be        = fy["cost"] / fy_hrs_bill if fy_hrs_bill else 0
-fy_avg_up    = fy["rev"]  / fy_hrs_bill if fy_hrs_bill else 0
-pnl_eur["Full Year"] = [fmt_eur(fy["rev"]), fmt_eur(fy_excl), fmt_eur(fy_backfill_eur),
-                         fmt_eur(fy["cost"]), fmt_eur(fy["margin"]),
-                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—",
-                         f'€{fy_be:.2f}', f'€{fy_avg_up:.2f}',
-                         "","","","",
-                         f'{fy_hrs_bill:,.0f}', f'{fy_hrs_bf:,.0f}', f'{fy_hrs_tot:,.0f}']
-pnl_try["Full Year"] = [fmt_try(fy["rev_try"]), fmt_try(fy_prod_cost_try), fmt_try(fy_backfill_try),
-                         fmt_try(fy["cost_try"]), fmt_try(fy["margin_try"]),
-                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—",
-                         f'€{fy_be:.2f}', f'€{fy_avg_up:.2f}',
-                         "","","","",
-                         f'{fy_hrs_bill:,.0f}', f'{fy_hrs_bf:,.0f}', f'{fy_hrs_tot:,.0f}']
+
+r_fy_e = fy_row_eur(); r_fy_t = fy_row_try()
+assert len(r_fy_e) == N, f"FY EUR: {len(r_fy_e)} != {N}"
+assert len(r_fy_t) == N, f"FY TRY: {len(r_fy_t)} != {N}"
+pnl_eur["Full Year"] = r_fy_e
+pnl_try["Full Year"] = r_fy_t
 
 tab_eur, tab_try = st.tabs(["💶 EUR View", "₺ TRY View"])
 with tab_eur:
