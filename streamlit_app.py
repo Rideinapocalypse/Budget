@@ -349,15 +349,46 @@ for i, b in enumerate(blocks):
         hr_raw  = r2c3.text_input(f"Hours Override (global: {g_hours})",
                                    value="" if b.get("hours_override") is None else str(b["hours_override"]),
                                    key=f"hr_{active}_{i}", placeholder="blank = global")
-        with r2c4:
-            st.markdown("**Revenue (EUR)**")
-            st.markdown(f"<span style='color:#10b981;font-size:18px;font-weight:700'>{fmt_eur(rev)}</span>",
-                        unsafe_allow_html=True)
-        with r2c5:
-            st.markdown("**Margin (EUR)**")
-            color = "#10b981" if margin >= 0 else "#ef4444"
-            st.markdown(f"<span style='color:{color};font-size:18px;font-weight:700'>{fmt_eur(margin)}</span>",
-                        unsafe_allow_html=True)
+        # ── Cost breakdown ────────────────────────────────────
+        gross_salary_try  = hc * salary
+        ctc_cost_try      = gross_salary_try * g_ctc * (1 + g_bonus_pct)
+        meal_cost_try     = hc * g_meal
+        total_cost_try    = ctc_cost_try + meal_cost_try
+        total_cost_eur    = total_cost_try / fx if fx else 0
+
+        st.markdown("---")
+        bd1, bd2, bd3, bd4, bd5 = st.columns(5)
+        with bd1:
+            st.markdown("**🕐 Eff. Hrs / Agent**")
+            st.markdown(f"<span style='color:#8b96b0;font-size:15px;font-weight:600'>{eff:.1f} hrs</span>", unsafe_allow_html=True)
+            st.caption(f"{hours}h × (1 - {shrink*100:.0f}%)")
+        with bd2:
+            st.markdown("**💸 Salary CTC (TRY)**")
+            st.markdown(f"<span style='color:#f59e0b;font-size:15px;font-weight:600'>₺{ctc_cost_try:,.0f}</span>", unsafe_allow_html=True)
+            st.caption(f"₺{salary:,.0f} × {g_ctc} CTC × (1+{g_bonus_pct*100:.0f}% bonus)")
+        with bd3:
+            st.markdown("**🍽️ Meal Cards (TRY)**")
+            st.markdown(f"<span style='color:#f59e0b;font-size:15px;font-weight:600'>₺{meal_cost_try:,.0f}</span>", unsafe_allow_html=True)
+            st.caption(f"{hc} agents × ₺{g_meal:,.0f}")
+        with bd4:
+            st.markdown("**💰 Total Cost (EUR)**")
+            st.markdown(f"<span style='color:#ef4444;font-size:15px;font-weight:600'>€{total_cost_eur:,.0f}</span>", unsafe_allow_html=True)
+            st.caption(f"₺{total_cost_try:,.0f} ÷ {fx} FX")
+        with bd5:
+            st.markdown("**📈 Revenue (EUR)**")
+            st.markdown(f"<span style='color:#10b981;font-size:15px;font-weight:600'>{fmt_eur(rev)}</span>", unsafe_allow_html=True)
+            st.caption(f"{hc} HC × {eff:.1f}h × €{up}/hr")
+
+        margin_color = "#10b981" if margin >= 0 else "#ef4444"
+        st.markdown(
+            f"<div style='background:#1e2535;border:1px solid #2a3347;border-radius:6px;"
+            f"padding:10px 16px;margin-top:8px;display:flex;justify-content:space-between;align-items:center'>"
+            f"<span style='color:#8b96b0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em'>Gross Margin</span>"
+            f"<span style='color:{margin_color};font-size:20px;font-weight:700'>{fmt_eur(margin)}"
+            f" <span style='font-size:13px'>({fmt_pct(margin/rev) if rev else '—'})</span></span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
         blocks[i].update({
             "lang": new_lang, "hc": new_hc, "salary": new_sal, "unit_price": new_up,
