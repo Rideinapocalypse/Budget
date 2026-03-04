@@ -73,7 +73,7 @@ def wcell(ws, r, c, v, bold=False, bg=None, fg="000000", fmt=None, italic=False)
     return cell
 
 def hdr(ws, r, c, v):  return wcell(ws, r, c, v, bold=True,   bg="1F4E79", fg="FFFFFF")
-def inp(ws, r, c, v):  return wcell(ws, r, c, v,               bg="DDEEFF", fg="00008B")
+def inp(ws, r, c, v, fmt=None): return wcell(ws, r, c, v, bg="DDEEFF", fg="00008B", fmt=fmt)
 def note(ws, r, c, v): return wcell(ws, r, c, v, italic=True,  fg="888888")
 
 def set_widths(ws, widths):
