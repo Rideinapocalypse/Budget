@@ -42,21 +42,32 @@ if "active_month" not in st.session_state:
     st.session_state.active_month = "Jan"
 
 def fmt_eur(v): return f"€{v:,.0f}"
+def fmt_try(v): return f"₺{v:,.0f}"
 def fmt_pct(v): return f"{v*100:.1f}%"
 
 def get_totals(month, g):
-    total_rev = total_cost = total_hc = total_hrs = 0.0
+    total_rev_eur = total_cost_eur = total_cost_try = total_rev_try = total_hc = total_hrs = 0.0
     for b in st.session_state.blocks.get(month, []):
-        shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
+        raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
+        shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
         fx     = b["fx_override"]     if b.get("fx_override")     is not None else g["fx"]
         hours  = b["hours_override"]  if b.get("hours_override")  is not None else g["hours"]
         hc, sal, up = b.get("hc",0), b.get("salary",0), b.get("unit_price",0)
-        eff = hours * (1 - shrink)
-        rev = hc * eff * up
-        cost = (hc * sal * g["ctc"] * (1 + g["bonus_pct"]) + hc * g["meal"]) / fx if fx else 0
-        total_rev += rev; total_cost += cost; total_hc += hc; total_hrs += hc * eff
-    return dict(rev=total_rev, cost=total_cost, margin=total_rev-total_cost,
-                hc=total_hc, hrs=total_hrs)
+        eff          = hours * (1 - shrink)
+        rev_eur      = hc * eff * up
+        rev_try      = rev_eur * fx
+        cost_try     = hc * sal * g["ctc"] * (1 + g["bonus_pct"]) + hc * g["meal"]
+        cost_eur     = cost_try / fx if fx else 0
+        total_rev_eur  += rev_eur;  total_rev_try  += rev_try
+        total_cost_eur += cost_eur; total_cost_try += cost_try
+        total_hc += hc; total_hrs += hc * eff
+    return dict(
+        rev=total_rev_eur,   rev_try=total_rev_try,
+        cost=total_cost_eur, cost_try=total_cost_try,
+        margin=total_rev_eur-total_cost_eur,
+        margin_try=total_rev_try-total_cost_try,
+        hc=total_hc, hrs=total_hrs
+    )
 
 # openpyxl helpers
 def bdr():
@@ -284,10 +295,13 @@ st.markdown(f"### {active}")
 
 t = get_totals(active, g)
 k1,k2,k3,k4,k5 = st.columns(5)
-k1.metric("Total Revenue", fmt_eur(t["rev"]),  help="EUR this month")
-k2.metric("Total Cost",    fmt_eur(t["cost"]), help="EUR this month")
-k3.metric("Gross Margin",  fmt_eur(t["margin"]),
-          delta=fmt_pct(t["margin"]/t["rev"]) if t["rev"] else "0%")
+k1.metric("Revenue (EUR)", fmt_eur(t["rev"]),
+          delta=fmt_try(t["rev_try"]) + " TRY", delta_color="off")
+k2.metric("Cost (EUR)", fmt_eur(t["cost"]),
+          delta=fmt_try(t["cost_try"]) + " TRY", delta_color="off")
+k3.metric("Gross Margin (EUR)", fmt_eur(t["margin"]),
+          delta=f'{fmt_try(t["margin_try"])} TRY  |  {fmt_pct(t["margin"]/t["rev"]) if t["rev"] else "0%"}',
+          delta_color="normal")
 k4.metric("Total HC",      f"{int(t['hc'])} agents")
 k5.metric("Effective Hrs", f"{t['hrs']:,.0f} hrs")
 
@@ -315,16 +329,20 @@ if st.button("+ Add Production Block", type="secondary"):
 
 blocks_to_delete = []
 for i, b in enumerate(blocks):
-    shrink = b["shrink_override"] if b.get("shrink_override") is not None else g_shrink
+    raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g_shrink
+    shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
     fx     = b["fx_override"]     if b.get("fx_override")     is not None else g_fx
     hours  = b["hours_override"]  if b.get("hours_override")  is not None else g_hours
     hc, salary, up = b.get("hc",0), b.get("salary",0), b.get("unit_price",0)
-    eff = hours * (1 - shrink)
-    rev = hc * eff * up
-    cost_e = (hc * salary * g_ctc * (1 + g_bonus_pct) + hc * g_meal) / fx if fx else 0
-    margin = rev - cost_e
+    eff            = hours * (1 - shrink)
+    rev_eur        = hc * eff * up
+    rev_try        = rev_eur * fx
+    cost_try_total = hc * salary * g_ctc * (1 + g_bonus_pct) + hc * g_meal
+    cost_e         = cost_try_total / fx if fx else 0
+    margin         = rev_eur - cost_e
+    margin_try     = rev_try - cost_try_total
     label  = b.get("lang") or f"Block #{i+1}"
-    title  = f"Block #{i+1} — {label} | HC: {hc} | Rev: {fmt_eur(rev)} | Margin: {fmt_eur(margin)}"
+    title  = f"Block #{i+1} — {label} | HC: {hc} | Rev: {fmt_eur(rev_eur)} ({fmt_try(rev_try)}) | Margin: {fmt_eur(margin)}"
 
     with st.expander(title, expanded=True):
         r1c1,r1c2,r1c3,r1c4,r1c5 = st.columns([2,1,2,2,1])
@@ -350,11 +368,8 @@ for i, b in enumerate(blocks):
                                    value="" if b.get("hours_override") is None else str(b["hours_override"]),
                                    key=f"hr_{active}_{i}", placeholder="blank = global")
         # ── Cost breakdown ────────────────────────────────────
-        gross_salary_try  = hc * salary
-        ctc_cost_try      = gross_salary_try * g_ctc * (1 + g_bonus_pct)
-        meal_cost_try     = hc * g_meal
-        total_cost_try    = ctc_cost_try + meal_cost_try
-        total_cost_eur    = total_cost_try / fx if fx else 0
+        ctc_cost_try   = hc * salary * g_ctc * (1 + g_bonus_pct)
+        meal_cost_try  = hc * g_meal
 
         st.markdown("---")
         bd1, bd2, bd3, bd4, bd5 = st.columns(5)
@@ -363,20 +378,22 @@ for i, b in enumerate(blocks):
             st.markdown(f"<span style='color:#8b96b0;font-size:15px;font-weight:600'>{eff:.1f} hrs</span>", unsafe_allow_html=True)
             st.caption(f"{hours}h × (1 - {shrink*100:.0f}%)")
         with bd2:
-            st.markdown("**💸 Salary CTC (TRY)**")
+            st.markdown("**💸 Salary CTC**")
             st.markdown(f"<span style='color:#f59e0b;font-size:15px;font-weight:600'>₺{ctc_cost_try:,.0f}</span>", unsafe_allow_html=True)
-            st.caption(f"₺{salary:,.0f} × {g_ctc} CTC × (1+{g_bonus_pct*100:.0f}% bonus)")
+            st.caption(f"₺{salary:,.0f} × {g_ctc} CTC × (1+{g_bonus_pct*100:.0f}%)")
         with bd3:
-            st.markdown("**🍽️ Meal Cards (TRY)**")
+            st.markdown("**🍽️ Meal Cards**")
             st.markdown(f"<span style='color:#f59e0b;font-size:15px;font-weight:600'>₺{meal_cost_try:,.0f}</span>", unsafe_allow_html=True)
-            st.caption(f"{hc} agents × ₺{g_meal:,.0f}")
+            st.caption(f"{hc} HC × ₺{g_meal:,.0f}")
         with bd4:
-            st.markdown("**💰 Total Cost (EUR)**")
-            st.markdown(f"<span style='color:#ef4444;font-size:15px;font-weight:600'>€{total_cost_eur:,.0f}</span>", unsafe_allow_html=True)
-            st.caption(f"₺{total_cost_try:,.0f} ÷ {fx} FX")
+            st.markdown("**💰 Total Cost**")
+            st.markdown(f"<span style='color:#ef4444;font-size:15px;font-weight:600'>₺{cost_try_total:,.0f}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:#ef4444;font-size:13px'>€{cost_e:,.0f}</span>", unsafe_allow_html=True)
+            st.caption(f"÷ {fx} FX rate")
         with bd5:
-            st.markdown("**📈 Revenue (EUR)**")
-            st.markdown(f"<span style='color:#10b981;font-size:15px;font-weight:600'>{fmt_eur(rev)}</span>", unsafe_allow_html=True)
+            st.markdown("**📈 Revenue**")
+            st.markdown(f"<span style='color:#10b981;font-size:15px;font-weight:600'>₺{rev_try:,.0f}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:#10b981;font-size:13px'>{fmt_eur(rev_eur)}</span>", unsafe_allow_html=True)
             st.caption(f"{hc} HC × {eff:.1f}h × €{up}/hr")
 
         margin_color = "#10b981" if margin >= 0 else "#ef4444"
@@ -385,7 +402,8 @@ for i, b in enumerate(blocks):
             f"padding:10px 16px;margin-top:8px;display:flex;justify-content:space-between;align-items:center'>"
             f"<span style='color:#8b96b0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em'>Gross Margin</span>"
             f"<span style='color:{margin_color};font-size:20px;font-weight:700'>{fmt_eur(margin)}"
-            f" <span style='font-size:13px'>({fmt_pct(margin/rev) if rev else '—'})</span></span>"
+            f"&nbsp;&nbsp;<span style='font-size:14px'>₺{margin_try:,.0f}</span>"
+            f"&nbsp;&nbsp;<span style='font-size:13px'>({fmt_pct(margin/rev_eur) if rev_eur else '—'})</span></span>"
             f"</div>",
             unsafe_allow_html=True
         )
@@ -404,16 +422,32 @@ if blocks_to_delete:
 
 st.divider()
 st.markdown("### 📉 P&L Summary — Full Year")
-pnl = {"Line Item": ["Revenue (EUR)","Cost (EUR)","Gross Margin (EUR)","Margin %"]}
-fy_rev = fy_cost = fy_margin = 0.0
+
+fy = {"rev":0,"rev_try":0,"cost":0,"cost_try":0,"margin":0,"margin_try":0}
+month_data = {}
 for m in MONTHS:
     mt = get_totals(m, g)
-    fy_rev += mt["rev"]; fy_cost += mt["cost"]; fy_margin += mt["margin"]
-    pnl[m] = [fmt_eur(mt["rev"]), fmt_eur(mt["cost"]), fmt_eur(mt["margin"]),
-              fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—"]
-pnl["Full Year"] = [fmt_eur(fy_rev), fmt_eur(fy_cost), fmt_eur(fy_margin),
-                    fmt_pct(fy_margin/fy_rev) if fy_rev else "—"]
-st.dataframe(pd.DataFrame(pnl).set_index("Line Item"), use_container_width=True)
+    month_data[m] = mt
+    for k in fy: fy[k] += mt[k]
+
+pnl_eur = {"Line Item": ["Revenue (EUR)","Cost (EUR)","Gross Margin (EUR)","Margin %"]}
+pnl_try = {"Line Item": ["Revenue (TRY)","Cost (TRY)","Gross Margin (TRY)","Margin %"]}
+for m in MONTHS:
+    mt = month_data[m]
+    pnl_eur[m] = [fmt_eur(mt["rev"]), fmt_eur(mt["cost"]), fmt_eur(mt["margin"]),
+                  fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—"]
+    pnl_try[m] = [fmt_try(mt["rev_try"]), fmt_try(mt["cost_try"]), fmt_try(mt["margin_try"]),
+                  fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—"]
+pnl_eur["Full Year"] = [fmt_eur(fy["rev"]), fmt_eur(fy["cost"]), fmt_eur(fy["margin"]),
+                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—"]
+pnl_try["Full Year"] = [fmt_try(fy["rev_try"]), fmt_try(fy["cost_try"]), fmt_try(fy["margin_try"]),
+                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—"]
+
+tab_eur, tab_try = st.tabs(["💶 EUR View", "₺ TRY View"])
+with tab_eur:
+    st.dataframe(pd.DataFrame(pnl_eur).set_index("Line Item"), use_container_width=True)
+with tab_try:
+    st.dataframe(pd.DataFrame(pnl_try).set_index("Line Item"), use_container_width=True)
 
 st.divider()
 st.caption("CC Budget Tool · Streamlit · openpyxl · No xlsxwriter needed")
