@@ -707,46 +707,64 @@ for col, (role, meta) in zip(oh_cols, ROLE_META.items()):
         new_sal   = st.number_input(f"Base Salary TRY/mo ({role})",
                                      value=float(cfg.get("salary", meta["default_sal"])),
                                      step=1000.0, min_value=0.0, key=f"oh_sal_{active}_{role}")
-        new_ratio = st.number_input(f"Span of Control (1 {role} per N agents)",
+        new_ratio = st.number_input(f"Span of control (agents per {role})",
                                      value=int(cfg.get("ratio", meta["default_ratio"])),
                                      step=1, min_value=1, key=f"oh_ratio_{active}_{role}",
-                                     help=f"Auto HC = {prod_hc_now} ÷ {cfg.get('ratio', meta['default_ratio'])} = {prod_hc_now / cfg.get('ratio', meta['default_ratio']):.2f}")
-        override_raw = st.text_input(f"HC Override (blank = auto)",
-                                      value="" if cfg.get("hc_override") is None else str(cfg["hc_override"]),
+                                     help=f"1 {role} manages this many production agents.")
+        # Auto HC = exact fraction for cost model; hired HC = ceiling (you must hire whole people)
+        auto_hc_exact  = prod_hc_now / new_ratio if new_ratio else 0
+        auto_hc_hired  = math.ceil(auto_hc_exact) if prod_hc_now > 0 else 0
+        utilization    = (auto_hc_exact / auto_hc_hired * 100) if auto_hc_hired else 0
+
+        override_raw = st.text_input(f"HC Override (blank = auto-ceil)",
+                                      value="" if cfg.get("hc_override") is None else str(int(cfg["hc_override"])),
                                       key=f"oh_hc_{active}_{role}",
-                                      placeholder=f"auto: {prod_hc_now / new_ratio:.2f}")
-        # Calc display
-        hc_val    = float(override_raw) if override_raw.strip() else prod_hc_now / new_ratio
-        cost_try  = hc_val * new_sal * g_ctc * (1 + g_bonus_pct) + hc_val * g_meal
+                                      placeholder=f"{auto_hc_hired} (auto)",
+                                      help=f"Ratio needs {auto_hc_exact:.2f} → hire {auto_hc_hired}. Override if you're sharing this role across accounts.")
+
+        # Hired HC: override or ceiling — cost uses exact fraction, display shows hired integer
+        hc_hired  = int(float(override_raw)) if override_raw.strip() else auto_hc_hired
+        hc_cost   = float(override_raw) if override_raw.strip() else auto_hc_exact  # fractional for cost
+        cost_try  = hc_cost * new_sal * g_ctc * (1 + g_bonus_pct) + hc_cost * g_meal
         cost_eur  = cost_try / g_fx if g_fx else 0
+
+        # Utilization colour: green <85%, amber 85-99%, red >=100%
+        if utilization >= 100:   u_color, u_label = "#ef4444", f"{utilization:.0f}% — overstretched ⚠️"
+        elif utilization >= 85:  u_color, u_label = "#f59e0b", f"{utilization:.0f}% — near capacity"
+        else:                    u_color, u_label = "#10b981", f"{utilization:.0f}% utilisation"
+
         st.markdown(
             f"<div style='background:#1e2535;border:1px solid #2a3347;border-radius:5px;"
-            f"padding:8px 12px;margin-top:4px;font-size:12px'>"
-            f"<span style='color:#8b96b0'>HC: </span><b style='color:#e8edf5'>{hc_val:.2f}</b>"
-            f"&nbsp;·&nbsp;<span style='color:#8b96b0'>Cost: </span>"
+            f"padding:8px 12px;margin-top:4px;font-size:12px;line-height:1.8'>"
+            f"<div><span style='color:#8b96b0'>Hired HC: </span>"
+            f"<b style='color:#e8edf5;font-size:15px'>{hc_hired}</b>"
+            f"<span style='color:#5a6480'> (ratio needs {auto_hc_exact:.2f})</span></div>"
+            f"<div><span style='color:#8b96b0'>Utilisation: </span>"
+            f"<b style='color:{u_color}'>{u_label}</b></div>"
+            f"<div><span style='color:#8b96b0'>Cost: </span>"
             f"<b style='color:#ef4444'>₺{cost_try:,.0f}</b>"
-            f"&nbsp;/&nbsp;<b style='color:#ef4444'>€{cost_eur:,.0f}</b>"
+            f"<span style='color:#5a6480'> / </span>"
+            f"<b style='color:#ef4444'>€{cost_eur:,.0f}</b></div>"
             f"</div>", unsafe_allow_html=True
         )
-        # Save state
+        # Save — store hired HC as override so cost model uses it
         oh_data[role]["salary"]      = new_sal
         oh_data[role]["ratio"]       = new_ratio
-        oh_data[role]["hc_override"] = float(override_raw) if override_raw.strip() else None
+        oh_data[role]["hc_override"] = float(hc_hired) if override_raw.strip() else None
 
 # Overhead summary bar
 oh_now = calc_overhead(active, prod_hc_now, g)
 oh_total_try = oh_now["total_cost_try"]
 oh_total_eur = oh_now["total_cost_eur"]
-oh_hc_total  = sum(oh_now[r]["hc"] for r in ROLE_META)
 st.markdown(
     f"<div style='background:#1e2535;border:1px solid #8b5cf6;border-radius:6px;"
     f"padding:10px 18px;margin-top:8px;display:flex;justify-content:space-between;align-items:center'>"
-    f"<span style='color:#8b5cf6;font-weight:600'>🏢 Total Overhead Cost — {active}</span>"
+    f"<span style='color:#8b5cf6;font-weight:600'>🏢 Total Overhead — {active}</span>"
     f"<span style='color:#e8edf5'>"
-    f"TM: <b>{oh_now['TM']['hc']:.2f} HC</b> &nbsp;|&nbsp; "
-    f"QM: <b>{oh_now['QM']['hc']:.2f} HC</b> &nbsp;|&nbsp; "
-    f"OM: <b>{oh_now['OM']['hc']:.2f} HC</b> &nbsp;|&nbsp; "
-    f"Total: <b style='color:#ef4444'>₺{oh_total_try:,.0f}</b> / "
+    f"TM: <b>{oh_now['TM']['hc']:.0f} HC</b> &nbsp;|&nbsp; "
+    f"QM: <b>{oh_now['QM']['hc']:.0f} HC</b> &nbsp;|&nbsp; "
+    f"OM: <b>{oh_now['OM']['hc']:.0f} HC</b> &nbsp;|&nbsp; "
+    f"Total cost: <b style='color:#ef4444'>₺{oh_total_try:,.0f}</b> / "
     f"<b style='color:#ef4444'>€{oh_total_eur:,.0f}</b>"
     f"</span></div>", unsafe_allow_html=True
 )
