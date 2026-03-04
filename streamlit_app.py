@@ -47,16 +47,19 @@ if "attrition_rate" not in st.session_state:
     st.session_state.attrition_rate = 0.05
 if "backfill_efficiency" not in st.session_state:
     st.session_state.backfill_efficiency = 0.50
-# Overhead roles: TM, QM, OM — stored per month
-if "overhead" not in st.session_state:
-    st.session_state.overhead = {
-        m: {
-            "TM": {"ratio": 10, "hc_override": None, "salary": 55000},
-            "QM": {"ratio": 20, "hc_override": None, "salary": 60000},
-            "OM": {"ratio": 50, "hc_override": None, "salary": 80000},
-        }
-        for m in MONTHS
+# Overhead roles: global config (applies all months unless per-month override set)
+if "overhead_global" not in st.session_state:
+    st.session_state.overhead_global = {
+        "TM": {"ratio": 10, "hc_override": None, "salary": 55000},
+        "QM": {"ratio": 20, "hc_override": None, "salary": 60000},
+        "OM": {"ratio": 50, "hc_override": None, "salary": 80000},
     }
+if "overhead_monthly" not in st.session_state:
+    st.session_state.overhead_monthly = {m: None for m in MONTHS}
+
+def get_oh_cfg(month):
+    mo = st.session_state.overhead_monthly.get(month)
+    return mo if mo is not None else st.session_state.overhead_global
 
 @st.cache_data(ttl=300)
 def fetch_live_fx():
@@ -150,7 +153,7 @@ def get_totals(month, g):
 
 def calc_overhead(month, prod_hc, g):
     """Calculate overhead cost for TM/QM/OM roles for a given month."""
-    oh     = st.session_state.overhead.get(month, {})
+    oh     = get_oh_cfg(month)
     result = {}
     total_cost_try = total_cost_eur = 0.0
     for role, defaults in [("TM",{"ratio":10,"salary":55000}),
@@ -684,10 +687,32 @@ if blocks_to_delete:
 # ── Overhead Roles ───────────────────────────────────────────
 st.divider()
 st.markdown("### 🏢 Overhead Roles")
-st.caption("TM / QM / OM — cost only, not billable. HC auto-calculated from production HC via span-of-control ratio, or set manually.")
 
-oh_data   = st.session_state.overhead[active]
-prod_hc_now = t["hc"]  # current month production HC for ratio display
+# Determine if this month has a per-month override
+has_monthly_override = st.session_state.overhead_monthly.get(active) is not None
+mode_label = f"📌 {active} override active" if has_monthly_override else "🌐 Global config (all months)"
+
+oh_mode_col, oh_action_col = st.columns([3,2])
+oh_mode_col.caption(f"TM / QM / OM — pure cost, not billable. Ratio auto-calculates HC from production HC. {mode_label}")
+
+with oh_action_col:
+    act1, act2 = st.columns(2)
+    if act1.button("📋 Copy global → all months", use_container_width=True,
+                   help="Apply current global config to every month, clearing any per-month overrides"):
+        st.session_state.overhead_monthly = {m: None for m in MONTHS}
+        st.success("Global overhead applied to all months.")
+        st.rerun()
+    if has_monthly_override:
+        if act2.button(f"✖ Clear {active} override", use_container_width=True,
+                       help=f"Remove {active} override and fall back to global"):
+            st.session_state.overhead_monthly[active] = None
+            st.rerun()
+    else:
+        act2.caption("No override for this month")
+
+# Work on global or monthly config
+oh_data = get_oh_cfg(active)
+prod_hc_now = t["hc"]
 
 oh_cols = st.columns(3)
 ROLE_META = {
@@ -747,10 +772,17 @@ for col, (role, meta) in zip(oh_cols, ROLE_META.items()):
             f"<b style='color:#ef4444'>€{cost_eur:,.0f}</b></div>"
             f"</div>", unsafe_allow_html=True
         )
-        # Save — store hired HC as override so cost model uses it
+        # Save back — if editing global, write to global; if monthly override, write there
         oh_data[role]["salary"]      = new_sal
         oh_data[role]["ratio"]       = new_ratio
         oh_data[role]["hc_override"] = float(hc_hired) if override_raw.strip() else None
+        # If user changed anything and this was global, promote to per-month override
+        # so other months stay untouched
+        if st.session_state.overhead_monthly.get(active) is None:
+            # First edit on this month — promote global to a per-month copy
+            import copy as _copy
+            st.session_state.overhead_monthly[active] = _copy.deepcopy(st.session_state.overhead_global)
+        st.session_state.overhead_monthly[active][role] = oh_data[role]
 
 # Overhead summary bar
 oh_now = calc_overhead(active, prod_hc_now, g)
