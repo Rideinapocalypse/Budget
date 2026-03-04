@@ -10,6 +10,7 @@ from io import BytesIO
 import copy
 import urllib.request
 import json
+import math
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -93,7 +94,7 @@ def get_totals(month, g):
         weighted_fx  += hc * fx
 
     # Attrition & backfill
-    attrition_hc   = round(total_hc * st.session_state.attrition_rate)
+    attrition_hc   = math.ceil(total_hc * st.session_state.attrition_rate)
     net_hc         = total_hc - attrition_hc
     backfill_hc    = attrition_hc  # 1-for-1 replacement
 
@@ -187,7 +188,7 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
         for b in rows:
             hc_val   = b.get("hc", 0)
             att_rate = st.session_state.attrition_rate
-            bf_hc    = round(hc_val * att_rate)
+            bf_hc    = math.ceil(hc_val * att_rate)
             vals = [m, b.get("lang",""), hc_val, b.get("salary",0), b.get("unit_price",0),
                     b["shrink_override"] if b.get("shrink_override") is not None else "",
                     b["fx_override"]     if b.get("fx_override")     is not None else "",
@@ -513,7 +514,7 @@ for i, b in enumerate(blocks):
         ctc_cost_try     = hc * salary * g_ctc * (1 + g_bonus_pct)
         meal_cost_try    = hc * g_meal
         # per-block backfill
-        b_hc             = round(hc * st.session_state.attrition_rate)
+        b_hc             = math.ceil(hc * st.session_state.attrition_rate)
         b_cost_try       = b_hc * salary * g_ctc * (1 + g_bonus_pct) + b_hc * g_meal
         b_cost_eur       = b_cost_try / fx if fx else 0
         total_cost_incl  = cost_try_total + b_cost_try
