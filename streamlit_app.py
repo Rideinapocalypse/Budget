@@ -1,4 +1,3 @@
-
 """
 CC Budget & Forecast Tool - Streamlit App
 Run with: streamlit run streamlit_app.py
@@ -43,6 +42,8 @@ if "blocks" not in st.session_state:
     st.session_state.blocks = {m: [] for m in MONTHS}
 if "active_month" not in st.session_state:
     st.session_state.active_month = "Jan"
+if "attrition_rate" not in st.session_state:
+    st.session_state.attrition_rate = 0.05  # 5% default
 
 @st.cache_data(ttl=300)  # cache 5 minutes
 def fetch_live_fx():
@@ -86,12 +87,15 @@ def get_totals(month, g):
         total_rev_eur  += rev_eur;  total_rev_try  += rev_try
         total_cost_eur += cost_eur; total_cost_try += cost_try
         total_hc += hc; total_hrs += hc * eff
+    attrition_hc = round(total_hc * st.session_state.attrition_rate)
     return dict(
         rev=total_rev_eur,   rev_try=total_rev_try,
         cost=total_cost_eur, cost_try=total_cost_try,
         margin=total_rev_eur-total_cost_eur,
         margin_try=total_rev_try-total_cost_try,
-        hc=total_hc, hrs=total_hrs
+        hc=total_hc, hrs=total_hrs,
+        attrition_hc=attrition_hc,
+        net_hc=total_hc - attrition_hc,
     )
 
 # openpyxl helpers
@@ -135,9 +139,9 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
     set_widths(ws, [10, 18, 10, 22, 22, 24, 18, 22])
 
     col_hdrs  = ["Month","Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
-                 "Shrinkage Override","FX Override","Hours Override"]
+                 "Shrinkage Override","FX Override","Hours Override","Attrition Target %"]
     col_hints = ["Jan/Feb/etc","e.g. DE, EN, TR","agents","monthly gross TRY","billable EUR/hr",
-                 "blank=global","blank=global","blank=global"]
+                 "blank=global","blank=global","blank=global","e.g. 0.05 = 5%"]
 
     # Title
     ws["A1"].value = "CC Budget Tool - Data Template"
@@ -160,7 +164,8 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
             vals = [m, b.get("lang",""), b.get("hc",0), b.get("salary",0), b.get("unit_price",0),
                     b["shrink_override"] if b.get("shrink_override") is not None else "",
                     b["fx_override"]     if b.get("fx_override")     is not None else "",
-                    b["hours_override"]  if b.get("hours_override")  is not None else ""]
+                    b["hours_override"]  if b.get("hours_override")  is not None else "",
+                    st.session_state.attrition_rate]
             for ci, v in enumerate(vals, 1): inp(ws, ri, ci, v)
             ri += 1
         # blank separator row between months
@@ -251,6 +256,12 @@ with st.sidebar:
     g_ctc       = st.number_input("Salary Multiplier (CTC)", value=1.70, step=0.05, min_value=1.0)
     g_bonus_pct = st.number_input("Bonus % of Base Salary",  value=0.10, step=0.01, min_value=0.0)
     g_meal      = st.number_input("Meal Card / Agent / Month (TRY)", value=5850, step=50, min_value=0)
+
+    st.divider()
+    st.markdown('<div class="section-title">Attrition</div>', unsafe_allow_html=True)
+    attrition_pct = st.slider("Monthly Attrition Target %", 0.0, 0.30, 0.05, 0.01, format="%.0f%%",
+                               help="Expected % of HC lost per month. Shown as a warning if exceeded.")
+    st.session_state.attrition_rate = attrition_pct
 
     g = dict(hours=g_hours, shrink=g_shrink, fx=g_fx,
              ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal)
@@ -355,8 +366,33 @@ gm_pct = fmt_pct(t["margin"]/t["rev"]) if t["rev"] else "0%"
 k3.metric(f"Gross Margin (EUR)  {gm_pct}", fmt_eur(t["margin"]),
           delta=f'{fmt_try(t["margin_try"])} TRY  |  {gm_pct}',
           delta_color="normal")
-k4.metric("Total HC",      f"{int(t['hc'])} agents")
+attr_hc   = t["attrition_hc"]
+net_hc    = t["net_hc"]
+attr_pct  = fmt_pct(attrition_pct)
+k4.metric("Total HC",
+          f"{int(t['hc'])} agents",
+          delta=f"-{attr_hc} attrition ({attr_pct})",
+          delta_color="inverse",
+          help=f"Net HC after {attr_pct} attrition: {net_hc} agents")
 k5.metric("Effective Hrs", f"{t['hrs']:,.0f} hrs")
+
+# ── Attrition warning banner ─────────────────────────────────
+if t["hc"] > 0:
+    attr_hc  = t["attrition_hc"]
+    net_hc   = t["net_hc"]
+    color    = "#f59e0b" if attr_hc > 0 else "#10b981"
+    icon     = "⚠️" if attr_hc > 0 else "✅"
+    st.markdown(
+        f"<div style='background:#1e2535;border:1px solid {color};border-radius:6px;"
+        f"padding:10px 18px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center'>"
+        f"<span style='color:{color};font-weight:600'>{icon} Attrition Forecast — {active}</span>"
+        f"<span style='color:#e8edf5'>"
+        f"Starting HC: <b>{int(t['hc'])}</b> &nbsp;|&nbsp; "
+        f"Attrition ({fmt_pct(attrition_pct)}): <b style='color:#ef4444'>-{attr_hc}</b> &nbsp;|&nbsp; "
+        f"Net HC End of Month: <b style='color:#10b981'>{net_hc}</b>"
+        f"</span></div>",
+        unsafe_allow_html=True
+    )
 
 st.divider()
 
@@ -509,18 +545,20 @@ for m in MONTHS:
     month_data[m] = mt
     for k in fy: fy[k] += mt[k]
 
-pnl_eur = {"Line Item": ["Revenue (EUR)","Cost (EUR)","Gross Margin (EUR)","Margin %"]}
-pnl_try = {"Line Item": ["Revenue (TRY)","Cost (TRY)","Gross Margin (TRY)","Margin %"]}
+pnl_eur = {"Line Item": ["Revenue (EUR)","Cost (EUR)","Gross Margin (EUR)","Margin %","HC","Attrition (-)",  "Net HC"]}
+pnl_try = {"Line Item": ["Revenue (TRY)","Cost (TRY)","Gross Margin (TRY)","Margin %","HC","Attrition (-)","Net HC"]}
 for m in MONTHS:
     mt = month_data[m]
     pnl_eur[m] = [fmt_eur(mt["rev"]), fmt_eur(mt["cost"]), fmt_eur(mt["margin"]),
-                  fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—"]
+                  fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—",
+                  int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["net_hc"])]
     pnl_try[m] = [fmt_try(mt["rev_try"]), fmt_try(mt["cost_try"]), fmt_try(mt["margin_try"]),
-                  fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—"]
+                  fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—",
+                  int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["net_hc"])]
 pnl_eur["Full Year"] = [fmt_eur(fy["rev"]), fmt_eur(fy["cost"]), fmt_eur(fy["margin"]),
-                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—"]
+                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—","","",""]
 pnl_try["Full Year"] = [fmt_try(fy["rev_try"]), fmt_try(fy["cost_try"]), fmt_try(fy["margin_try"]),
-                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—"]
+                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—","","",""]
 
 tab_eur, tab_try = st.tabs(["💶 EUR View", "₺ TRY View"])
 with tab_eur:
