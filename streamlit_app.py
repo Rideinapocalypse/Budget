@@ -47,6 +47,9 @@ if "attrition_rate" not in st.session_state:
     st.session_state.attrition_rate = 0.05
 if "backfill_efficiency" not in st.session_state:
     st.session_state.backfill_efficiency = 0.50
+# COLA: list of {block_key, cola_date (str YYYY-MM-DD), new_up (float)}
+if "cola_configs" not in st.session_state:
+    st.session_state.cola_configs = {}  # key: f"{month}_{block_idx}" -> {date, new_up}
 # Overhead roles: global config (applies all months unless per-month override set)
 if "overhead_global" not in st.session_state:
     st.session_state.overhead_global = {
@@ -75,15 +78,45 @@ def fmt_eur(v): return f"€{v:,.0f}"
 def fmt_try(v): return f"₺{v:,.0f}"
 def fmt_pct(v): return f"{v*100:.1f}%"
 
+import calendar as _cal
+import datetime as _dt
+
+def effective_up(month, block_idx, base_up):
+    """Return effective unit price for a month, prorated if COLA date falls in it."""
+    key = f"{month}_{block_idx}"
+    cfg = st.session_state.cola_configs.get(key)
+    if not cfg or not cfg.get("date") or not cfg.get("new_up"):
+        return base_up
+    try:
+        cola_date = _dt.date.fromisoformat(cfg["date"])
+        # Figure out which month index this block lives in
+        month_idx  = MONTHS.index(month) + 1
+        year       = cola_date.year if cola_date.month == month_idx else _dt.date.today().year
+        days_in_mo = _cal.monthrange(year, month_idx)[1]
+        if cola_date.month != month_idx:
+            # COLA not in this month — check if it's before or after
+            if (cola_date.month < month_idx) or (cola_date.year < year):
+                return cfg["new_up"]   # already past, full new UP
+            else:
+                return base_up         # not yet, full old UP
+        # Proration: days before COLA use old UP, days from COLA onwards use new UP
+        days_old = cola_date.day - 1      # days 1..(day-1)
+        days_new = days_in_mo - days_old  # days day..end
+        return (days_old * base_up + days_new * cfg["new_up"]) / days_in_mo
+    except Exception:
+        return base_up
+
 def get_totals(month, g):
     total_rev_eur = total_cost_eur = total_cost_try = total_rev_try = total_hc = total_hrs = 0.0
     weighted_sal = weighted_fx = weighted_hrs = 0.0
-    for b in st.session_state.blocks.get(month, []):
+    for blk_i, b in enumerate(st.session_state.blocks.get(month, [])):
         raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
         shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
         fx     = b["fx_override"]     if b.get("fx_override")     is not None else g["fx"]
         hours  = b["hours_override"]  if b.get("hours_override")  is not None else g["hours"]
-        hc, sal, up = b.get("hc",0), b.get("salary",0), b.get("unit_price",0)
+        hc, sal  = b.get("hc",0), b.get("salary",0)
+        base_up  = b.get("unit_price", 0)
+        up       = effective_up(month, blk_i, base_up)  # COLA-adjusted UP
         eff          = hours * (1 - shrink)
         rev_eur      = hc * eff * up
         rev_try      = rev_eur * fx
@@ -163,11 +196,11 @@ def calc_overhead(month, prod_hc, g):
         ratio    = cfg.get("ratio", defaults["ratio"])
         sal      = cfg.get("salary", defaults["salary"])
         override = cfg.get("hc_override")
-        # HC: manual override wins, else ratio-based (at least 1 if prod_hc > 0)
+        # HC: manual override wins, else ratio-based ceiling (you hire whole people)
         if override is not None:
             hc = override
         else:
-            hc = prod_hc / ratio if ratio > 0 else 0  # exact fractional
+            hc = math.ceil(prod_hc / ratio) if (ratio > 0 and prod_hc > 0) else 0
         cost_try = hc * sal * g["ctc"] * (1 + g["bonus_pct"]) + hc * g["meal"]
         cost_eur = cost_try / g["fx"] if g["fx"] else 0
         result[role] = dict(hc=hc, salary=sal, ratio=ratio,
@@ -560,7 +593,9 @@ for i, b in enumerate(blocks):
     shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
     fx     = b["fx_override"]     if b.get("fx_override")     is not None else g_fx
     hours  = b["hours_override"]  if b.get("hours_override")  is not None else g_hours
-    hc, salary, up = b.get("hc",0), b.get("salary",0), b.get("unit_price",0)
+    hc, salary     = b.get("hc",0), b.get("salary",0)
+    base_up        = b.get("unit_price", 0)
+    up             = effective_up(active, i, base_up)   # COLA-adjusted
     eff            = hours * (1 - shrink)
     rev_eur        = hc * eff * up
     rev_try        = rev_eur * fx
@@ -598,6 +633,42 @@ for i, b in enumerate(blocks):
                                    value="" if b.get("attrition_override") is None else str(b["attrition_override"]),
                                    key=f"att_{active}_{i}", placeholder="blank = global",
                                    help="Override attrition rate for this block only e.g. 0.08 for 8%")
+
+        # ── COLA / UP increase ────────────────────────────────
+        cola_key = f"{active}_{i}"
+        cola_cfg = st.session_state.cola_configs.get(cola_key, {})
+        with st.expander("📈 COLA / Unit Price Change", expanded=bool(cola_cfg.get("date"))):
+            cc1, cc2, cc3 = st.columns([2, 2, 1])
+            cola_date_val = cola_cfg.get("date", "")
+            cola_up_val   = float(cola_cfg.get("new_up", up)) if cola_cfg.get("new_up") else float(b.get("unit_price", 0))
+            new_cola_date = cc1.text_input("Effective date (YYYY-MM-DD)",
+                                            value=cola_date_val, key=f"cola_date_{active}_{i}",
+                                            placeholder="e.g. 2025-04-15",
+                                            help="New UP applies from this date. Month of change is prorated.")
+            new_cola_up   = cc2.number_input("New Unit Price (EUR/hr)",
+                                              value=cola_up_val, step=0.1, min_value=0.0,
+                                              key=f"cola_up_{active}_{i}")
+            if cc3.button("Clear COLA", key=f"cola_clr_{active}_{i}", use_container_width=True):
+                st.session_state.cola_configs.pop(cola_key, None)
+                st.rerun()
+            if new_cola_date.strip():
+                try:
+                    _dt.date.fromisoformat(new_cola_date.strip())
+                    st.session_state.cola_configs[cola_key] = {"date": new_cola_date.strip(), "new_up": new_cola_up}
+                    # Show proration preview for current month
+                    eff = effective_up(active, i, b.get("unit_price", 0))
+                    if eff != b.get("unit_price", 0):
+                        st.caption(f"⚡ Effective UP this month: **€{eff:.4f}/hr** (prorated from €{b.get('unit_price',0):.2f} → €{new_cola_up:.2f} on {new_cola_date.strip()})")
+                    else:
+                        cola_dt = _dt.date.fromisoformat(new_cola_date.strip())
+                        m_idx   = MONTHS.index(active) + 1
+                        if cola_dt.month > m_idx:
+                            st.caption(f"ℹ️ COLA not yet active this month — full new UP applies from {MONTHS[cola_dt.month-1]}")
+                        else:
+                            st.caption(f"✅ Full new UP €{new_cola_up:.2f}/hr active this month")
+                except ValueError:
+                    st.warning("Invalid date format — use YYYY-MM-DD")
+
         # ── Cost breakdown ────────────────────────────────────
         ctc_cost_try     = hc * salary * g_ctc * (1 + g_bonus_pct)
         meal_cost_try    = hc * g_meal
@@ -968,5 +1039,125 @@ with tab_eur:
 with tab_try:
     st.dataframe(pd.DataFrame(pnl_try).set_index("Line Item"), use_container_width=True)
 
+# ── Charts ───────────────────────────────────────────────────
 st.divider()
-st.caption("CC Budget Tool · Streamlit · openpyxl · No xlsxwriter needed")
+st.markdown("### 📊 Performance Charts")
+
+try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    chart_months = MONTHS
+    revs   = [month_data[m]["rev"]    for m in chart_months]
+    costs  = [month_data[m]["cost"]   for m in chart_months]
+    gms    = [month_data[m]["margin"] for m in chart_months]
+    margins= [month_data[m]["margin"] / month_data[m]["rev"] * 100
+              if month_data[m]["rev"] else 0 for m in chart_months]
+    be_ups = [month_data[m]["breakeven_up"] for m in chart_months]
+    avg_ups= [month_data[m]["rev"] / month_data[m]["hrs_billable"]
+              if month_data[m]["hrs_billable"] else 0 for m in chart_months]
+
+    # ── Chart 1: Revenue / Cost / GM bars + Margin% line ─────
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    bar_w = 0.25
+    fig.add_trace(go.Bar(
+        name="Revenue (EUR)", x=chart_months, y=revs,
+        marker_color="#3b82f6", opacity=0.85,
+        text=[f"€{v/1000:.0f}k" for v in revs], textposition="outside",
+        textfont=dict(size=10, color="#8b96b0"),
+    ), secondary_y=False)
+    fig.add_trace(go.Bar(
+        name="Total Cost (EUR)", x=chart_months, y=costs,
+        marker_color="#ef4444", opacity=0.85,
+        text=[f"€{v/1000:.0f}k" for v in costs], textposition="outside",
+        textfont=dict(size=10, color="#8b96b0"),
+    ), secondary_y=False)
+    fig.add_trace(go.Bar(
+        name="Gross Margin (EUR)", x=chart_months, y=gms,
+        marker_color="#10b981", opacity=0.85,
+        text=[f"€{v/1000:.0f}k" for v in gms], textposition="outside",
+        textfont=dict(size=10, color="#8b96b0"),
+    ), secondary_y=False)
+    fig.add_trace(go.Scatter(
+        name="Margin %", x=chart_months, y=margins,
+        mode="lines+markers+text",
+        line=dict(color="#f59e0b", width=2.5, dash="dot"),
+        marker=dict(size=7, color="#f59e0b",
+                    line=dict(color="#1e2535", width=2)),
+        text=[f"{v:.1f}%" for v in margins],
+        textposition="top center",
+        textfont=dict(size=10, color="#f59e0b"),
+        yaxis="y2",
+    ), secondary_y=True)
+
+    fig.update_layout(
+        barmode="group", bargap=0.18, bargroupgap=0.05,
+        plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+        font=dict(color="#8b96b0", family="Inter, sans-serif"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=420,
+        xaxis=dict(showgrid=False, tickfont=dict(color="#8b96b0")),
+        yaxis=dict(showgrid=True, gridcolor="#1e2535",
+                   tickprefix="€", tickfont=dict(color="#8b96b0"), title=""),
+        yaxis2=dict(showgrid=False, ticksuffix="%",
+                    tickfont=dict(color="#f59e0b"),
+                    range=[0, max(margins) * 1.4 if any(m>0 for m in margins) else 100],
+                    title=""),
+        hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347",
+                        font=dict(color="#e8edf5")),
+    )
+    fig.update_traces(hovertemplate="%{x}<br>%{y:,.0f}<extra>%{fullData.name}</extra>")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Chart 2: Break-even vs Avg Selling Price ──────────────
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
+        name="Avg Selling Price (€/hr)", x=chart_months, y=avg_ups,
+        mode="lines+markers",
+        line=dict(color="#3b82f6", width=2.5),
+        marker=dict(size=8, color="#3b82f6", line=dict(color="#1e2535", width=2)),
+        fill="tozeroy", fillcolor="rgba(59,130,246,0.08)",
+    ))
+    fig2.add_trace(go.Scatter(
+        name="Break-even Price (€/hr)", x=chart_months, y=be_ups,
+        mode="lines+markers",
+        line=dict(color="#ef4444", width=2, dash="dash"),
+        marker=dict(size=7, color="#ef4444", line=dict(color="#1e2535", width=2)),
+        fill="tozeroy", fillcolor="rgba(239,68,68,0.05)",
+    ))
+    # Shade gap between the two lines
+    fig2.add_trace(go.Scatter(
+        name="Margin buffer (€/hr)",
+        x=chart_months + chart_months[::-1],
+        y=avg_ups + be_ups[::-1],
+        fill="toself",
+        fillcolor="rgba(16,185,129,0.08)",
+        line=dict(color="rgba(0,0,0,0)"),
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig2.update_layout(
+        plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+        font=dict(color="#8b96b0", family="Inter, sans-serif"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, bgcolor="rgba(0,0,0,0)",
+                    font=dict(size=11)),
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=300,
+        xaxis=dict(showgrid=False, tickfont=dict(color="#8b96b0")),
+        yaxis=dict(showgrid=True, gridcolor="#1e2535",
+                   tickprefix="€", ticksuffix="/hr",
+                   tickfont=dict(color="#8b96b0"), title=""),
+        hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347",
+                        font=dict(color="#e8edf5")),
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+except ImportError:
+    st.info("Install plotly for charts: `pip install plotly`")
+
+st.divider()
+st.caption("CC Budget Tool · Streamlit · openpyxl · plotly")
