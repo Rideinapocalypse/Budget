@@ -82,27 +82,30 @@ import calendar as _cal
 import datetime as _dt
 
 def effective_up(month, block_idx, base_up):
-    """Return effective unit price for a month, prorated if COLA date falls in it."""
-    key = f"{month}_{block_idx}"
+    """Return effective unit price for a month, prorated if COLA date falls in it.
+    COLA date is treated as a position within the fiscal year (Jan=1 … Dec=12).
+    Year is taken from the date only to get days-in-month; comparisons use month number.
+    """
+    key = str(block_idx)  # COLA config is per block globally, not per month
     cfg = st.session_state.cola_configs.get(key)
     if not cfg or not cfg.get("date") or not cfg.get("new_up"):
         return base_up
     try:
-        cola_date = _dt.date.fromisoformat(cfg["date"])
-        # Figure out which month index this block lives in
-        month_idx  = MONTHS.index(month) + 1
-        year       = cola_date.year if cola_date.month == month_idx else _dt.date.today().year
-        days_in_mo = _cal.monthrange(year, month_idx)[1]
-        if cola_date.month != month_idx:
-            # COLA not in this month — check if it's before or after
-            if (cola_date.month < month_idx) or (cola_date.year < year):
-                return cfg["new_up"]   # already past, full new UP
-            else:
-                return base_up         # not yet, full old UP
-        # Proration: days before COLA use old UP, days from COLA onwards use new UP
-        days_old = cola_date.day - 1      # days 1..(day-1)
-        days_new = days_in_mo - days_old  # days day..end
-        return (days_old * base_up + days_new * cfg["new_up"]) / days_in_mo
+        cola_date  = _dt.date.fromisoformat(cfg["date"])
+        new_up     = float(cfg["new_up"])
+        cola_mo    = cola_date.month          # 1–12
+        budget_mo  = MONTHS.index(month) + 1  # 1–12
+
+        if budget_mo < cola_mo:
+            return base_up        # COLA hasn't happened yet this month
+        elif budget_mo > cola_mo:
+            return new_up         # COLA fully applied
+        else:
+            # Transition month — prorate by day
+            days_in_mo = _cal.monthrange(cola_date.year, cola_mo)[1]
+            days_old   = cola_date.day - 1          # days 1 … (day-1) at old UP
+            days_new   = days_in_mo - days_old      # days day … end at new UP
+            return (days_old * base_up + days_new * new_up) / days_in_mo
     except Exception:
         return base_up
 
@@ -635,7 +638,7 @@ for i, b in enumerate(blocks):
                                    help="Override attrition rate for this block only e.g. 0.08 for 8%")
 
         # ── COLA / UP increase ────────────────────────────────
-        cola_key = f"{active}_{i}"
+        cola_key = str(i)  # global per block, applies across all months
         cola_cfg = st.session_state.cola_configs.get(cola_key, {})
         with st.expander("📈 COLA / Unit Price Change", expanded=bool(cola_cfg.get("date"))):
             cc1, cc2, cc3 = st.columns([2, 2, 1])
