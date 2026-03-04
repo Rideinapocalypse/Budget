@@ -307,17 +307,43 @@ k5.metric("Effective Hrs", f"{t['hrs']:,.0f} hrs")
 
 st.divider()
 
-with st.expander("📋 Copy Month to Another Month"):
-    cc1, cc2, cc3 = st.columns([2,2,1])
-    copy_from = cc1.selectbox("From", MONTHS, index=MONTHS.index(active), key="copy_from")
-    copy_to   = cc2.selectbox("To",   MONTHS, index=(MONTHS.index(active)+1)%12, key="copy_to")
-    if cc3.button("Copy", use_container_width=True, type="primary"):
-        if copy_from == copy_to:
-            st.error("Source and destination are the same!")
+with st.expander("📋 Copy Month to Multiple Months"):
+    cc1, cc2 = st.columns([2, 4])
+    copy_from = cc1.selectbox("Copy FROM", MONTHS, index=MONTHS.index(active), key="copy_from")
+
+    with cc2:
+        st.markdown("**Copy TO** (select one or more)")
+        dest_cols = st.columns(6)
+        selected_targets = []
+        for mi, m in enumerate(MONTHS):
+            col = dest_cols[mi % 6]
+            disabled = (m == copy_from)
+            checked = col.checkbox(
+                m,
+                key=f"copy_target_{m}",
+                value=False,
+                disabled=disabled,
+                help="Same as source" if disabled else f"Copy to {m}",
+            )
+            if checked and not disabled:
+                selected_targets.append(m)
+
+    st.markdown("")
+    btn_col, info_col = st.columns([1, 4])
+    if btn_col.button("▶ Copy", use_container_width=True, type="primary"):
+        if not selected_targets:
+            st.error("Please select at least one destination month.")
         else:
-            st.session_state.blocks[copy_to] = copy.deepcopy(st.session_state.blocks[copy_from])
-            st.success(f"Copied {copy_from} to {copy_to}")
+            for m in selected_targets:
+                st.session_state.blocks[m] = copy.deepcopy(st.session_state.blocks[copy_from])
+            targets_str = ", ".join(selected_targets)
+            st.success(f"✅ Copied **{copy_from}** → {targets_str}")
             st.rerun()
+    with info_col:
+        if selected_targets:
+            st.info(f"Will copy **{copy_from}** → {', '.join(selected_targets)}")
+        else:
+            st.caption("No destination months selected yet.")
 
 st.markdown('<div class="section-title">Production Blocks</div>', unsafe_allow_html=True)
 blocks = st.session_state.blocks[active]
