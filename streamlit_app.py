@@ -1,642 +1,585 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>CC Budget Tool — Call Center Budget & Forecast</title>
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CC Budget App</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0e1117;
+  --surface:#161b27;
+  --surface2:#1e2535;
+  --surface3:#252d3f;
+  --border:#2a3347;
+  --border2:#344060;
+  --text:#e8edf5;
+  --text2:#8b96b0;
+  --text3:#5a6480;
+  --accent:#3b82f6;
+  --accent2:#60a5fa;
+  --green:#10b981;
+  --red:#ef4444;
+  --yellow:#f59e0b;
+  --purple:#8b5cf6;
+}
+html{scroll-behavior:smooth}
+body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--surface)}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
 
-    :root {
-      --ink:    #0d0f14;
-      --paper:  #f5f2eb;
-      --accent: #1a6fff;
-      --green:  #00c471;
-      --yellow: #ffd84d;
-      --muted:  #6b7280;
-      --card:   #ffffff;
-      --border: #e2ddd4;
-    }
+.app{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
 
-    html { scroll-behavior: smooth; }
+.sidebar{background:var(--surface);border-right:1px solid var(--border);padding:0;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+.sidebar-header{padding:20px 20px 16px;border-bottom:1px solid var(--border)}
+.logo{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.logo-icon{width:32px;height:32px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.logo-text{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:15px;letter-spacing:-0.03em}
+.logo-text span{color:var(--accent)}
+.logo-sub{font-size:11px;color:var(--text3);letter-spacing:0.04em;text-transform:uppercase;margin-top:2px}
+.sidebar-section{padding:16px 20px;border-bottom:1px solid var(--border)}
+.sidebar-section-title{font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text3);margin-bottom:12px}
+.field{margin-bottom:12px}
+.field:last-child{margin-bottom:0}
+.field label{display:block;font-size:11px;color:var(--text2);margin-bottom:5px;font-weight:500}
+.field-row{display:flex;align-items:center;gap:0}
+.field-row input{flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;font-family:'IBM Plex Mono',monospace;font-size:13px;border-radius:4px 0 0 4px;outline:none;transition:border-color .15s}
+.field-row input:focus{border-color:var(--accent)}
+.field-row .spin{width:28px;height:32px;background:var(--surface3);border:1px solid var(--border);color:var(--text2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s;border-left:none}
+.field-row .spin:last-of-type{border-radius:0 4px 4px 0}
+.field-row .spin:hover{background:var(--accent);color:white;border-color:var(--accent)}
+.field input[type=range]{width:100%;accent-color:var(--accent);cursor:pointer}
+.range-val{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--accent);text-align:right;margin-top:3px}
+select.field-select{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;border-radius:4px;outline:none;cursor:pointer}
+select.field-select:focus{border-color:var(--accent)}
 
-    body {
-      font-family: 'DM Mono', monospace;
-      background: var(--paper);
-      color: var(--ink);
-      overflow-x: hidden;
-    }
+.month-tabs{display:flex;flex-wrap:wrap;gap:4px;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--surface)}
+.month-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;padding:5px 10px;border-radius:3px;border:1px solid var(--border);background:transparent;color:var(--text3);cursor:pointer;transition:all .15s}
+.month-tab:hover{border-color:var(--border2);color:var(--text2)}
+.month-tab.active{background:var(--accent);border-color:var(--accent);color:white}
 
-    body::before {
-      content: '';
-      position: fixed; inset: 0;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
-      pointer-events: none;
-      z-index: 0;
-    }
+.main{padding:0;display:flex;flex-direction:column}
+.topbar{padding:16px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface);position:sticky;top:0;z-index:10}
+.topbar-title{font-size:18px;font-weight:600;letter-spacing:-0.02em}
+.topbar-title span{color:var(--accent);font-family:'IBM Plex Mono',monospace}
+.topbar-actions{display:flex;gap:8px}
+.btn{font-family:'IBM Plex Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:4px;border:none;cursor:pointer;display:flex;align-items:center;gap:6px;letter-spacing:0.02em;transition:all .15s}
+.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--text2)}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn-primary{background:var(--accent);color:white}
+.btn-primary:hover{background:var(--accent2)}
+.btn-green{background:var(--green);color:white}
+.btn-green:hover{opacity:.85}
+.btn-yellow{background:var(--yellow);color:#000}
+.btn-yellow:hover{opacity:.85}
 
-    nav {
-      position: sticky; top: 0;
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 1rem 2.5rem;
-      background: rgba(245,242,235,0.88);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border);
-      z-index: 100;
-    }
+.content{padding:24px 28px;flex:1}
 
-    .nav-logo {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 1rem;
-      letter-spacing: -0.02em;
-      display: flex; align-items: center; gap: 0.5rem;
-    }
-    .nav-logo span { color: var(--accent); }
+.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px}
+.kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;position:relative;overflow:hidden}
+.kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--kpi-color,var(--accent))}
+.kpi-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;font-weight:600}
+.kpi-val{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;color:var(--text)}
+.kpi-sub{font-size:10px;color:var(--text3);margin-top:3px}
 
-    .nav-links { display: flex; gap: 2rem; list-style: none; }
-    .nav-links a {
-      font-size: 0.78rem;
-      font-weight: 500;
-      color: var(--muted);
-      text-decoration: none;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      transition: color .2s;
-    }
-    .nav-links a:hover { color: var(--ink); }
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden}
+.panel-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+.panel-header:hover{background:var(--surface2)}
+.panel-title{font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:var(--text2);display:flex;align-items:center;gap:8px}
+.panel-title .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+.panel-chevron{color:var(--text3);font-size:12px;transition:transform .2s}
+.panel-chevron.open{transform:rotate(180deg)}
+.panel-body{padding:16px}
 
-    .nav-cta {
-      background: var(--ink);
-      color: var(--paper) !important;
-      padding: 0.45rem 1.1rem;
-      border-radius: 4px;
-      transition: background .2s !important;
-    }
-    .nav-cta:hover { background: var(--accent) !important; color: white !important; }
+.prod-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
+.prod-field label{font-size:10px;color:var(--text3);margin-bottom:4px;display:block;font-weight:500}
+.prod-field input{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;font-family:'IBM Plex Mono',monospace;font-size:13px;border-radius:4px;outline:none;transition:border-color .15s}
+.prod-field input:focus{border-color:var(--accent)}
+.prod-result{background:var(--surface3);border:1px solid var(--border);border-radius:4px;padding:7px 10px}
+.prod-result-label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px}
+.prod-result-val{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--green);font-weight:500}
+.remove-btn{width:30px;height:30px;background:transparent;border:1px solid var(--border);color:var(--text3);border-radius:4px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s;align-self:end}
+.remove-btn:hover{background:var(--red);border-color:var(--red);color:white}
+.add-block-btn{width:100%;padding:10px;background:transparent;border:1px dashed var(--border2);color:var(--text3);border-radius:4px;cursor:pointer;font-family:'IBM Plex Sans',sans-serif;font-size:12px;font-weight:500;transition:all .15s;margin-top:12px}
+.add-block-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(59,130,246,0.05)}
 
-    .hero {
-      position: relative;
-      min-height: 90vh;
-      display: grid;
-      place-items: center;
-      padding: 6rem 2rem 4rem;
-      overflow: hidden;
-    }
+.pnl-table{width:100%;border-collapse:collapse;font-size:12px}
+.pnl-table th{font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text3);padding:8px 10px;text-align:right;border-bottom:1px solid var(--border)}
+.pnl-table th:first-child{text-align:left}
+.pnl-table td{padding:8px 10px;border-bottom:1px solid var(--border);font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:var(--text2)}
+.pnl-table td:first-child{text-align:left;font-family:'IBM Plex Sans',sans-serif;color:var(--text)}
+.pnl-table tr:last-child td{border-bottom:none}
+.pnl-table .total-row td{background:var(--surface2);font-weight:600;color:var(--text)}
+.pnl-table .positive{color:var(--green)}
+.pnl-table .negative{color:var(--red)}
 
-    .hero-bg {
-      position: absolute; inset: 0;
-      background:
-        radial-gradient(ellipse 70% 60% at 80% 20%, rgba(26,111,255,0.07) 0%, transparent 60%),
-        radial-gradient(ellipse 50% 40% at 10% 80%, rgba(0,196,113,0.06) 0%, transparent 50%);
-    }
+.copy-helper{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:var(--surface2);border-radius:6px;margin-bottom:16px}
+.copy-helper label{font-size:12px;color:var(--text2)}
+.copy-helper select{background:var(--surface3);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:12px;outline:none;cursor:pointer}
 
-    .hero-grid {
-      position: absolute; inset: 0;
-      background-image:
-        linear-gradient(var(--border) 1px, transparent 1px),
-        linear-gradient(90deg, var(--border) 1px, transparent 1px);
-      background-size: 48px 48px;
-      opacity: 0.5;
-      mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 30%, transparent 100%);
-    }
+.toast{position:fixed;bottom:24px;right:24px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:12px 18px;border-radius:6px;font-size:13px;font-weight:500;z-index:1000;opacity:0;transform:translateY(10px);transition:all .3s;pointer-events:none}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.success{border-color:var(--green);color:var(--green)}
+.toast.error{border-color:var(--red);color:var(--red)}
 
-    .hero-inner {
-      position: relative;
-      max-width: 860px;
-      text-align: center;
-    }
+.section-label{font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text3);margin-bottom:12px;margin-top:24px;display:flex;align-items:center;gap:8px}
+.section-label::after{content:'';flex:1;height:1px;background:var(--border)}
 
-    .hero-badge {
-      display: inline-flex; align-items: center; gap: 0.4rem;
-      font-size: 0.72rem;
-      font-weight: 500;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      background: var(--yellow);
-      color: var(--ink);
-      padding: 0.35rem 0.9rem;
-      border-radius: 2px;
-      margin-bottom: 1.8rem;
-      opacity: 0;
-      animation: fadeUp 0.6s ease 0.1s forwards;
-    }
-
-    h1 {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: clamp(2.8rem, 7vw, 5.2rem);
-      line-height: 1.0;
-      letter-spacing: -0.04em;
-      margin-bottom: 1.4rem;
-      opacity: 0;
-      animation: fadeUp 0.7s ease 0.25s forwards;
-    }
-
-    h1 .accent { color: var(--accent); }
-    h1 .line2 { display: block; }
-
-    .hero-sub {
-      font-size: 1.05rem;
-      font-weight: 300;
-      color: var(--muted);
-      line-height: 1.7;
-      max-width: 560px;
-      margin: 0 auto 2.5rem;
-      opacity: 0;
-      animation: fadeUp 0.7s ease 0.4s forwards;
-    }
-
-    .hero-actions {
-      display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;
-      opacity: 0;
-      animation: fadeUp 0.7s ease 0.55s forwards;
-    }
-
-    .btn {
-      font-family: 'DM Mono', monospace;
-      font-size: 0.82rem;
-      font-weight: 500;
-      letter-spacing: 0.03em;
-      padding: 0.75rem 1.8rem;
-      border-radius: 4px;
-      text-decoration: none;
-      transition: transform .15s, box-shadow .15s;
-      cursor: pointer;
-      border: none;
-    }
-
-    .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.12); }
-
-    .btn-primary { background: var(--ink); color: var(--paper); }
-    .btn-primary:hover { background: var(--accent); }
-
-    .btn-outline {
-      background: transparent;
-      color: var(--ink);
-      border: 1.5px solid var(--ink);
-    }
-    .btn-outline:hover { background: var(--ink); color: var(--paper); }
-
-    .stats-bar {
-      background: var(--ink);
-      color: var(--paper);
-      padding: 1.2rem 2.5rem;
-      display: flex;
-      justify-content: center;
-      gap: 0;
-      overflow: hidden;
-    }
-
-    .stat-item {
-      display: flex; flex-direction: column; align-items: center;
-      padding: 0 3rem;
-      border-right: 1px solid rgba(255,255,255,0.1);
-    }
-    .stat-item:last-child { border-right: none; }
-
-    .stat-num {
-      font-family: 'Syne', sans-serif;
-      font-size: 1.6rem;
-      font-weight: 800;
-      color: var(--yellow);
-    }
-    .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.5); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 0.15rem; }
-
-    section { padding: 5rem 2rem; position: relative; }
-    .section-inner { max-width: 1100px; margin: 0 auto; }
-
-    .section-tag {
-      font-size: 0.7rem;
-      font-weight: 500;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--accent);
-      margin-bottom: 0.8rem;
-    }
-
-    h2 {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: clamp(1.8rem, 4vw, 2.8rem);
-      letter-spacing: -0.03em;
-      line-height: 1.1;
-      margin-bottom: 1rem;
-    }
-
-    .section-desc {
-      font-size: 0.92rem;
-      color: var(--muted);
-      line-height: 1.8;
-      max-width: 520px;
-    }
-
-    .sheets-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 1.5rem;
-      margin-top: 3rem;
-    }
-
-    .sheet-card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1.6rem;
-      position: relative;
-      overflow: hidden;
-      transition: transform .2s, box-shadow .2s;
-    }
-    .sheet-card:hover { transform: translateY(-3px); box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
-    .sheet-card::before {
-      content: '';
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      height: 3px;
-      background: var(--card-accent, var(--accent));
-    }
-
-    .sheet-card:nth-child(1) { --card-accent: #1a6fff; }
-    .sheet-card:nth-child(2) { --card-accent: #ffd84d; }
-    .sheet-card:nth-child(3) { --card-accent: #00c471; }
-    .sheet-card:nth-child(4) { --card-accent: #ff6b35; }
-    .sheet-card:nth-child(5) { --card-accent: #9b59b6; }
-    .sheet-card:nth-child(6) { --card-accent: #e74c3c; }
-
-    .sheet-emoji { font-size: 1.6rem; margin-bottom: 0.8rem; }
-    .sheet-name { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; }
-    .sheet-desc { font-size: 0.8rem; color: var(--muted); line-height: 1.65; }
-
-    .colors-section { background: var(--ink); }
-    .colors-section h2, .colors-section .section-tag { color: var(--paper); }
-    .colors-section .section-desc { color: rgba(255,255,255,0.5); }
-
-    .color-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 1rem;
-      margin-top: 3rem;
-    }
-
-    .color-card {
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 6px;
-      padding: 1.4rem;
-      display: flex; align-items: flex-start; gap: 1rem;
-    }
-
-    .color-dot { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; margin-top: 2px; }
-    .color-info { flex: 1; }
-    .color-name { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 0.9rem; color: white; margin-bottom: 0.3rem; }
-    .color-meaning { font-size: 0.75rem; color: rgba(255,255,255,0.45); line-height: 1.5; }
-
-    .steps-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      margin-top: 3rem;
-      max-width: 680px;
-    }
-
-    .step {
-      display: flex; gap: 1.5rem;
-      padding: 1.5rem 0;
-      border-bottom: 1px solid var(--border);
-      opacity: 0;
-      transform: translateX(-20px);
-      transition: opacity .5s, transform .5s;
-    }
-    .step.visible { opacity: 1; transform: none; }
-
-    .step-num {
-      font-family: 'Syne', sans-serif;
-      font-weight: 800;
-      font-size: 2rem;
-      color: var(--border);
-      line-height: 1;
-      flex-shrink: 0;
-      width: 48px;
-      text-align: right;
-    }
-
-    .step-body { flex: 1; }
-    .step-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem; }
-    .step-text { font-size: 0.82rem; color: var(--muted); line-height: 1.7; }
-
-    code {
-      background: rgba(26,111,255,0.08);
-      color: var(--accent);
-      padding: 0.15rem 0.45rem;
-      border-radius: 3px;
-      font-size: 0.85em;
-    }
-
-    .tips-section { background: #f0f4ff; }
-
-    .tips-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 1rem;
-      margin-top: 3rem;
-    }
-
-    .tip-card {
-      background: white;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1.4rem;
-    }
-
-    .tip-icon { font-size: 1.4rem; margin-bottom: 0.6rem; }
-    .tip-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 0.9rem; margin-bottom: 0.4rem; }
-    .tip-text { font-size: 0.78rem; color: var(--muted); line-height: 1.6; }
-
-    .download-section { background: var(--accent); color: white; text-align: center; }
-    .download-section h2 { color: white; }
-    .download-section .section-desc { color: rgba(255,255,255,0.7); margin: 0 auto 2.5rem; }
-
-    .download-btns { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-
-    .btn-white { background: white; color: var(--accent); }
-    .btn-white:hover { background: var(--paper); }
-
-    .btn-ghost {
-      background: transparent;
-      color: white;
-      border: 1.5px solid rgba(255,255,255,0.5);
-    }
-    .btn-ghost:hover { background: rgba(255,255,255,0.15); }
-
-    footer {
-      background: var(--ink);
-      color: rgba(255,255,255,0.35);
-      text-align: center;
-      padding: 2rem;
-      font-size: 0.75rem;
-      letter-spacing: 0.04em;
-    }
-    footer a { color: rgba(255,255,255,0.5); text-decoration: none; }
-    footer a:hover { color: white; }
-
-    @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(20px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-
-    @media (max-width: 640px) {
-      nav { padding: 1rem 1.2rem; }
-      .nav-links { display: none; }
-      .stat-item { padding: 0 1.2rem; }
-      .stat-num { font-size: 1.2rem; }
-      section { padding: 3.5rem 1.2rem; }
-    }
-  </style>
+@media(max-width:900px){
+  .app{grid-template-columns:1fr}
+  .sidebar{position:relative;height:auto}
+  .kpi-row{grid-template-columns:repeat(2,1fr)}
+}
+</style>
 </head>
 <body>
 
-<nav>
-  <div class="nav-logo">📞 <span>CC</span>Budget</div>
-  <ul class="nav-links">
-    <li><a href="#sheets">Sheets</a></li>
-    <li><a href="#quickstart">Quick Start</a></li>
-    <li><a href="#tips">Tips</a></li>
-    <li><a href="#download" class="nav-cta">Download</a></li>
-  </ul>
-</nav>
-
-<section class="hero">
-  <div class="hero-bg"></div>
-  <div class="hero-grid"></div>
-  <div class="hero-inner">
-    <div class="hero-badge">🔥 Free Template — No Sign-up Required</div>
-    <h1>
-      Call Center
-      <span class="line2 accent">Budget &amp; Forecast</span>
-    </h1>
-    <p class="hero-sub">
-      A professional Excel template for call centers — with a Python script to regenerate or customize it. Fill in blue cells, everything else calculates automatically.
-    </p>
-    <div class="hero-actions">
-      <a href="CC_Budget_Template.xlsx" class="btn btn-primary" download>⬇ Download Excel Template</a>
-      <a href="generate_budget.py" class="btn btn-outline" download>⬇ Download Python Script</a>
+<div class="app">
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <div class="logo">
+      <div class="logo-icon">📞</div>
+      <div>
+        <div class="logo-text"><span>CC</span>Budget</div>
+        <div class="logo-sub">Call Center Forecast</div>
+      </div>
     </div>
   </div>
-</section>
 
-<div class="stats-bar">
-  <div class="stat-item"><span class="stat-num">6</span><span class="stat-label">Sheets</span></div>
-  <div class="stat-item"><span class="stat-num">100%</span><span class="stat-label">Auto-calc</span></div>
-  <div class="stat-item"><span class="stat-num">12</span><span class="stat-label">Months</span></div>
-  <div class="stat-item"><span class="stat-num">Free</span><span class="stat-label">No Cost</span></div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Global Inputs</div>
+    <div class="field">
+      <label>Worked Hours / Agent / Month</label>
+      <div class="field-row">
+        <input type="number" id="g_hours" value="180" step="1" oninput="recalc()"/>
+        <button class="spin" onclick="adj('g_hours',-1)">−</button>
+        <button class="spin" onclick="adj('g_hours',1)">+</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Shrinkage % (default)</label>
+      <input type="range" id="g_shrink" min="0" max="0.5" step="0.01" value="0.15" oninput="document.getElementById('g_shrink_val').textContent=(+this.value*100).toFixed(0)+'%';recalc()"/>
+      <div class="range-val" id="g_shrink_val">15%</div>
+    </div>
+    <div class="field">
+      <label>FX Rate (1 EUR = TRY) [default]</label>
+      <div class="field-row">
+        <input type="number" id="g_fx" value="38" step="0.5" oninput="recalc()"/>
+        <button class="spin" onclick="adj('g_fx',-0.5)">−</button>
+        <button class="spin" onclick="adj('g_fx',0.5)">+</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Global Cost Drivers</div>
+    <div class="field">
+      <label>Salary Multiplier (CTC)</label>
+      <div class="field-row">
+        <input type="number" id="g_ctc" value="1.70" step="0.05" oninput="recalc()"/>
+        <button class="spin" onclick="adj('g_ctc',-0.05)">−</button>
+        <button class="spin" onclick="adj('g_ctc',0.05)">+</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Bonus % of Base Salary</label>
+      <div class="field-row">
+        <input type="number" id="g_bonus_pct" value="0.10" step="0.01" oninput="recalc()"/>
+        <button class="spin" onclick="adj('g_bonus_pct',-0.01)">−</button>
+        <button class="spin" onclick="adj('g_bonus_pct',0.01)">+</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Meal Card / Agent / Month (TRY)</label>
+      <div class="field-row">
+        <input type="number" id="g_meal" value="5850" step="50" oninput="recalc()"/>
+        <button class="spin" onclick="adj('g_meal',-50)">−</button>
+        <button class="spin" onclick="adj('g_meal',50)">+</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Unit Price Currency</label>
+      <select class="field-select" id="g_currency" onchange="recalc()">
+        <option value="EUR">EUR</option>
+        <option value="USD">USD</option>
+        <option value="TRY">TRY</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Month Navigation</div>
+    <div id="monthTabs" style="display:flex;flex-wrap:wrap;gap:4px"></div>
+  </div>
+
+  <div class="sidebar-section" style="margin-top:auto">
+    <div class="sidebar-section-title">Data</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn btn-green" onclick="exportExcel()" style="width:100%;justify-content:center">⬇ Export Excel</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('fileInput').click()" style="width:100%;justify-content:center">⬆ Import Excel</button>
+      <input type="file" id="fileInput" accept=".xlsx" onchange="importExcel(event)" style="display:none"/>
+    </div>
+  </div>
+</aside>
+
+<main class="main">
+  <div class="topbar">
+    <div class="topbar-title">Budget — <span id="activeMonthLabel">Jan</span></div>
+    <div class="topbar-actions">
+      <button class="btn btn-ghost" onclick="addBlock()">+ Add Block</button>
+      <button class="btn btn-yellow" onclick="showCopyHelper()">📋 Copy Month</button>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="kpi-row">
+      <div class="kpi-card" style="--kpi-color:var(--accent)">
+        <div class="kpi-label">Total Revenue</div>
+        <div class="kpi-val" id="kpi_rev">€0</div>
+        <div class="kpi-sub">EUR this month</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color:var(--red)">
+        <div class="kpi-label">Total Cost</div>
+        <div class="kpi-val" id="kpi_cost">€0</div>
+        <div class="kpi-sub">EUR this month</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color:var(--green)">
+        <div class="kpi-label">Gross Margin</div>
+        <div class="kpi-val" id="kpi_margin">€0</div>
+        <div class="kpi-sub" id="kpi_margin_pct">0%</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color:var(--yellow)">
+        <div class="kpi-label">Total HC</div>
+        <div class="kpi-val" id="kpi_hc">0</div>
+        <div class="kpi-sub">agents this month</div>
+      </div>
+      <div class="kpi-card" style="--kpi-color:var(--purple)">
+        <div class="kpi-label">Effective Hours</div>
+        <div class="kpi-val" id="kpi_hrs">0</div>
+        <div class="kpi-sub">billable hrs/month</div>
+      </div>
+    </div>
+
+    <div class="copy-helper" id="copyHelper" style="display:none">
+      <span>📋</span>
+      <label>Copy</label>
+      <select id="copyFrom"></select>
+      <label>→ to →</label>
+      <select id="copyTo"></select>
+      <button class="btn btn-yellow" onclick="doCopy()">Copy</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('copyHelper').style.display='none'">✕</button>
+    </div>
+
+    <div class="section-label">Production Blocks</div>
+    <div id="blocksContainer"></div>
+    <button class="add-block-btn" onclick="addBlock()">+ Add Production Block</button>
+
+    <div class="section-label" style="margin-top:32px">P&L Summary — Full Year</div>
+    <div class="panel">
+      <div class="panel-header" onclick="togglePanel(this)">
+        <div class="panel-title"><span class="dot" style="background:var(--green)"></span>Annual P&L Overview</div>
+        <span class="panel-chevron open">▼</span>
+      </div>
+      <div class="panel-body" style="overflow-x:auto">
+        <table class="pnl-table" id="pnlTable">
+          <thead>
+            <tr>
+              <th style="text-align:left">Line Item</th>
+              <th>Jan</th><th>Feb</th><th>Mar</th><th>Apr</th><th>May</th><th>Jun</th>
+              <th>Jul</th><th>Aug</th><th>Sep</th><th>Oct</th><th>Nov</th><th>Dec</th>
+              <th>Full Year</th>
+            </tr>
+          </thead>
+          <tbody id="pnlBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
 </div>
 
-<section id="sheets">
-  <div class="section-inner">
-    <p class="section-tag">What's inside</p>
-    <h2>Six sheets.<br/>One complete picture.</h2>
-    <p class="section-desc">Every sheet is linked — change a headcount number and revenue, costs, and margins update instantly across the whole workbook.</p>
-    <div class="sheets-grid">
-      <div class="sheet-card">
-        <div class="sheet-emoji">📋</div>
-        <div class="sheet-name">Instructions</div>
-        <div class="sheet-desc">Read first. Color coding guide, usage tips, and how each sheet connects to the others.</div>
-      </div>
-      <div class="sheet-card">
-        <div class="sheet-emoji">📊</div>
-        <div class="sheet-name">Assumptions</div>
-        <div class="sheet-desc">Enter unit rates, shrinkage %, salaries, meal cards, and CTC multipliers. These drive everything else.</div>
-      </div>
-      <div class="sheet-card">
-        <div class="sheet-emoji">👥</div>
-        <div class="sheet-name">Headcount Plan</div>
-        <div class="sheet-desc">Enter FTE count per role per month. Overhead roles auto-calculate as a ratio of billable agents.</div>
-      </div>
-      <div class="sheet-card">
-        <div class="sheet-emoji">💰</div>
-        <div class="sheet-name">Salary &amp; Cost</div>
-        <div class="sheet-desc">Auto-calculated salary + CTC cost. Includes gross wages, employer social costs, and meal card totals.</div>
-      </div>
-      <div class="sheet-card">
-        <div class="sheet-emoji">📈</div>
-        <div class="sheet-name">Revenue Forecast</div>
-        <div class="sheet-desc">Auto-calculated billable revenue based on headcount, unit rates, and adjusted productive hours.</div>
-      </div>
-      <div class="sheet-card">
-        <div class="sheet-emoji">📉</div>
-        <div class="sheet-name">P&amp;L Summary</div>
-        <div class="sheet-desc">Full P&amp;L with margin — adds overhead costs here. Shows gross margin $ and % by month and full year.</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="colors-section">
-  <div class="section-inner">
-    <p class="section-tag" style="color: rgba(255,255,255,0.4)">Color system</p>
-    <h2>Know what<br/>to touch.</h2>
-    <p class="section-desc">Every cell is color-coded so you always know exactly what to edit and what to leave alone.</p>
-    <div class="color-grid">
-      <div class="color-card">
-        <div class="color-dot" style="background:#1a6fff;"></div>
-        <div class="color-info">
-          <div class="color-name">Blue Text</div>
-          <div class="color-meaning">Input cells — fill these in. These are the only cells you should edit.</div>
-        </div>
-      </div>
-      <div class="color-card">
-        <div class="color-dot" style="background:#333;border:1px solid rgba(255,255,255,0.2);"></div>
-        <div class="color-info">
-          <div class="color-name">Black Text</div>
-          <div class="color-meaning">Auto-calculated formulas — do not edit. These update automatically.</div>
-        </div>
-      </div>
-      <div class="color-card">
-        <div class="color-dot" style="background:#00c471;"></div>
-        <div class="color-info">
-          <div class="color-name">Green Text</div>
-          <div class="color-meaning">Linked from another sheet — do not edit. Values pulled automatically.</div>
-        </div>
-      </div>
-      <div class="color-card">
-        <div class="color-dot" style="background:#ffd84d;"></div>
-        <div class="color-info">
-          <div class="color-name">Yellow Background</div>
-          <div class="color-meaning">Key assumption needing regular review — check these when business conditions change.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="quickstart">
-  <div class="section-inner">
-    <p class="section-tag">No coding needed</p>
-    <h2>Up and running<br/>in minutes.</h2>
-    <div class="steps-list">
-      <div class="step">
-        <div class="step-num">01</div>
-        <div class="step-body">
-          <div class="step-title">Download the Excel template</div>
-          <div class="step-text">Click the download button above to get <code>CC_Budget_Template.xlsx</code>. Open it in Excel or Google Sheets.</div>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">02</div>
-        <div class="step-body">
-          <div class="step-title">Read the Instructions tab</div>
-          <div class="step-text">Start on the <code>📋 Instructions</code> tab to understand the color coding and sheet structure.</div>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">03</div>
-        <div class="step-body">
-          <div class="step-title">Fill in the Assumptions sheet</div>
-          <div class="step-text">Enter unit rates, shrinkage %, salaries, meal cards, and CTC multipliers in the <strong>blue cells only</strong>.</div>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">04</div>
-        <div class="step-body">
-          <div class="step-title">Enter headcount by month</div>
-          <div class="step-text">In the <code>👥 Headcount Plan</code> tab, enter your FTE count per role for each month. Overhead auto-fills.</div>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">05</div>
-        <div class="step-body">
-          <div class="step-title">Review results automatically</div>
-          <div class="step-text">Check <code>💰 Salary &amp; Cost</code>, <code>📈 Revenue Forecast</code>, and <code>📉 P&amp;L Summary</code> — all calculated instantly.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="tips" class="tips-section">
-  <div class="section-inner">
-    <p class="section-tag">Pro tips</p>
-    <h2>Get the most<br/>out of it.</h2>
-    <div class="tips-grid">
-      <div class="tip-card">
-        <div class="tip-icon">📐</div>
-        <div class="tip-title">Shrinkage is fully adjustable</div>
-        <div class="tip-text">Edit each shrinkage component separately in the Assumptions sheet. Vacation, sick leave, training — each has its own line.</div>
-      </div>
-      <div class="tip-card">
-        <div class="tip-icon">🏗️</div>
-        <div class="tip-title">Overhead auto-calculates</div>
-        <div class="tip-text">Team Leaders, QA, WFM, and Compliance are tracked separately from billable agents and update as headcount changes.</div>
-      </div>
-      <div class="tip-card">
-        <div class="tip-icon">💼</div>
-        <div class="tip-title">CTC multiplier</div>
-        <div class="tip-text">Automatically adds employer social costs on top of gross salary. Just set the multiplier once and it applies everywhere.</div>
-      </div>
-      <div class="tip-card">
-        <div class="tip-icon">🍽️</div>
-        <div class="tip-title">Meal card calculation</div>
-        <div class="tip-text">Calculated as daily rate × working days per month. Update the daily rate in Assumptions and it flows through automatically.</div>
-      </div>
-      <div class="tip-card">
-        <div class="tip-icon">🔮</div>
-        <div class="tip-title">Instant forecasting</div>
-        <div class="tip-text">Change headcount numbers in future months — revenue and costs update instantly. Great for scenario planning.</div>
-      </div>
-      <div class="tip-card">
-        <div class="tip-icon">🐍</div>
-        <div class="tip-title">Customize with Python</div>
-        <div class="tip-text">Download <code>generate_budget.py</code>, edit the config at the top, and run it to regenerate the entire workbook with your LOBs and roles.</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="section-inner">
-    <p class="section-tag">Advanced</p>
-    <h2>Customize with<br/>Python.</h2>
-    <p class="section-desc">Want different languages, agent types, or overhead roles? Edit a few lines in the script and regenerate the whole workbook.</p>
-    <div style="margin-top:2.5rem; background: var(--ink); border-radius: 8px; padding: 2rem; font-size: 0.8rem; line-height: 1.9; overflow-x: auto;">
-      <div style="color: rgba(255,255,255,0.3); margin-bottom: 1rem; font-size: 0.7rem; letter-spacing: 0.08em;">INSTALL &amp; RUN</div>
-      <div><span style="color:#ffd84d;">$</span> <span style="color:#00c471;">pip</span> <span style="color:white;">install openpyxl</span></div>
-      <div><span style="color:#ffd84d;">$</span> <span style="color:#00c471;">python</span> <span style="color:white;">generate_budget.py</span></div>
-      <div style="margin-top:1.2rem; color: rgba(255,255,255,0.3); font-size: 0.7rem; letter-spacing: 0.08em;">ADD A NEW LANGUAGE / LOB</div>
-      <div style="margin-top:0.4rem; color: rgba(255,255,255,0.6);">UNIT_RATE_ROWS = [</div>
-      <div style="color: rgba(255,255,255,0.6);">&nbsp;&nbsp;("Spanish – Voice Inbound", "Per Hour", 7.5),</div>
-      <div style="color: #1a6fff;">&nbsp;&nbsp;("French – Chat Inbound",&nbsp;&nbsp; "Per Hour", 6.0),&nbsp;&nbsp;<span style="color:rgba(255,255,255,0.3)"># ← add here</span></div>
-      <div style="color: rgba(255,255,255,0.6);">]</div>
-    </div>
-  </div>
-</section>
-
-<section id="download" class="download-section">
-  <div class="section-inner">
-    <p class="section-tag" style="color:rgba(255,255,255,0.6)">Free download</p>
-    <h2>Ready to build<br/>your budget?</h2>
-    <p class="section-desc">No sign-up. No paywall. Just download and start filling in blue cells.</p>
-    <div class="download-btns">
-      <a href="CC_Budget_Template.xlsx" class="btn btn-white" download>⬇ Excel Template (.xlsx)</a>
-      <a href="generate_budget.py" class="btn btn-ghost" download>⬇ Python Script (.py)</a>
-    </div>
-  </div>
-</section>
-
-<footer>
-  <p>CC Budget Tool &mdash; Free call center budget template &mdash; <a href="generate_budget.py">View source</a></p>
-</footer>
+<div class="toast" id="toast"></div>
 
 <script>
-  const steps = document.querySelectorAll('.step');
-  const observer = new IntersectionObserver((entries) => {
-    entries.forEach((e, i) => {
-      if (e.isIntersecting) {
-        setTimeout(() => e.target.classList.add('visible'), i * 100);
-      }
-    });
-  }, { threshold: 0.2 });
-  steps.forEach(s => observer.observe(s));
-</script>
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let activeMonth = 0;
+let state = {};
+MONTHS.forEach((_,i) => { state[i] = []; });
 
+function buildMonthTabs(){
+  const el = document.getElementById('monthTabs');
+  el.innerHTML = MONTHS.map((m,i)=>`<button class="month-tab ${i===activeMonth?'active':''}" onclick="setMonth(${i})">${m}</button>`).join('');
+}
+
+function setMonth(i){
+  activeMonth = i;
+  document.getElementById('activeMonthLabel').textContent = MONTHS[i];
+  buildMonthTabs();
+  renderBlocks();
+  recalc();
+}
+
+function addBlock(data){
+  state[activeMonth].push(data || {lang:'',hc:0,salary:0,unitPrice:0,shrink:null,fx:null,hours:null});
+  renderBlocks();
+  recalc();
+}
+
+function removeBlock(idx){
+  state[activeMonth].splice(idx,1);
+  renderBlocks();
+  recalc();
+}
+
+function updateBlock(idx,field,val){
+  state[activeMonth][idx][field] = val;
+  recalc();
+}
+
+function renderBlocks(){
+  const m = activeMonth;
+  const blocks = state[m];
+  const container = document.getElementById('blocksContainer');
+  if(blocks.length===0){
+    container.innerHTML=`<div style="text-align:center;padding:32px;color:var(--text3);font-size:13px">No production blocks for ${MONTHS[m]}. Click "+ Add Block" to start.</div>`;
+    return;
+  }
+  container.innerHTML = blocks.map((b,i)=>{
+    const shrinkVal = b.shrink!==null?b.shrink:+document.getElementById('g_shrink').value;
+    const fxVal = b.fx!==null?b.fx:+document.getElementById('g_fx').value;
+    const hoursVal = b.hours!==null?b.hours:+document.getElementById('g_hours').value;
+    const effHrs = hoursVal*(1-shrinkVal);
+    const rev = b.hc*effHrs*b.unitPrice;
+    const ctc = +document.getElementById('g_ctc').value;
+    const bonus = +document.getElementById('g_bonus_pct').value;
+    const meal = +document.getElementById('g_meal').value;
+    const totalCost_eur = (b.hc*b.salary*ctc*(1+bonus)+b.hc*meal)/fxVal;
+    const margin = rev-totalCost_eur;
+    const colors = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444'];
+    return `
+    <div class="panel" style="margin-bottom:10px">
+      <div class="panel-header" onclick="togglePanel(this)" style="padding:10px 16px">
+        <div class="panel-title">
+          <span class="dot" style="background:${colors[i%5]}"></span>
+          Block #${i+1}${b.lang?' — '+b.lang:''}
+          <span style="font-size:10px;color:var(--text3);font-weight:400;margin-left:8px">${b.hc} HC · €${fmt(rev)} rev · €${fmt(margin)} margin</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button class="remove-btn" onclick="event.stopPropagation();removeBlock(${i})">✕</button>
+          <span class="panel-chevron open">▼</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="prod-grid">
+          <div class="prod-field"><label>Language / Label</label><input type="text" value="${b.lang}" placeholder="e.g. DE, EN, TR" oninput="updateBlock(${i},'lang',this.value)"/></div>
+          <div class="prod-field"><label>Headcount (HC)</label><input type="number" value="${b.hc}" step="1" min="0" oninput="updateBlock(${i},'hc',+this.value)"/></div>
+          <div class="prod-field"><label>Base Salary (TRY/mo)</label><input type="number" value="${b.salary}" step="100" min="0" oninput="updateBlock(${i},'salary',+this.value)"/></div>
+          <div class="prod-field"><label>Unit Price (EUR/hr)</label><input type="number" value="${b.unitPrice}" step="0.1" min="0" oninput="updateBlock(${i},'unitPrice',+this.value)"/></div>
+          <div></div>
+        </div>
+        <div class="prod-grid" style="grid-template-columns:1fr 1fr 1fr 1fr auto">
+          <div class="prod-field"><label>Shrinkage % (override)</label><input type="number" value="${b.shrink!==null?b.shrink:''}" placeholder="Global: ${(+document.getElementById('g_shrink').value*100).toFixed(0)}%" step="0.01" oninput="updateBlock(${i},'shrink',this.value===''?null:+this.value)"/></div>
+          <div class="prod-field"><label>FX Rate (override)</label><input type="number" value="${b.fx!==null?b.fx:''}" placeholder="Global: ${document.getElementById('g_fx').value}" step="0.5" oninput="updateBlock(${i},'fx',this.value===''?null:+this.value)"/></div>
+          <div class="prod-field"><label>Hours/Agent (override)</label><input type="number" value="${b.hours!==null?b.hours:''}" placeholder="Global: ${document.getElementById('g_hours').value}" step="1" oninput="updateBlock(${i},'hours',this.value===''?null:+this.value)"/></div>
+          <div><div class="prod-result"><div class="prod-result-label">Revenue (EUR)</div><div class="prod-result-val">€${fmt(rev)}</div></div></div>
+          <div><div class="prod-result"><div class="prod-result-label">Margin (EUR)</div><div class="prod-result-val" style="color:${margin>=0?'var(--green)':'var(--red)'}">€${fmt(margin)}</div></div></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function fmt(n){return Number(n).toLocaleString('en',{minimumFractionDigits:0,maximumFractionDigits:0})}
+function fmtPct(n){return (n*100).toFixed(1)+'%'}
+
+function recalc(){
+  renderBlocks();
+  updateKPIs();
+  updatePnL();
+}
+
+function getMonthTotals(m){
+  const blocks = state[m];
+  const gShrink=+document.getElementById('g_shrink').value;
+  const gFx=+document.getElementById('g_fx').value;
+  const gHours=+document.getElementById('g_hours').value;
+  const ctc=+document.getElementById('g_ctc').value;
+  const bonus=+document.getElementById('g_bonus_pct').value;
+  const meal=+document.getElementById('g_meal').value;
+  let totalRev=0,totalCostEur=0,totalHC=0,totalHrs=0;
+  blocks.forEach(b=>{
+    const shrink=b.shrink!==null?b.shrink:gShrink;
+    const fx=b.fx!==null?b.fx:gFx;
+    const hours=b.hours!==null?b.hours:gHours;
+    const effHrs=hours*(1-shrink);
+    totalRev+=b.hc*effHrs*b.unitPrice;
+    totalCostEur+=(b.hc*b.salary*ctc*(1+bonus)+b.hc*meal)/fx;
+    totalHC+=+b.hc;
+    totalHrs+=b.hc*effHrs;
+  });
+  return{rev:totalRev,cost:totalCostEur,margin:totalRev-totalCostEur,hc:totalHC,hrs:totalHrs};
+}
+
+function updateKPIs(){
+  const t=getMonthTotals(activeMonth);
+  document.getElementById('kpi_rev').textContent='€'+fmt(t.rev);
+  document.getElementById('kpi_cost').textContent='€'+fmt(t.cost);
+  document.getElementById('kpi_margin').textContent='€'+fmt(t.margin);
+  document.getElementById('kpi_margin').style.color=t.margin>=0?'var(--green)':'var(--red)';
+  document.getElementById('kpi_margin_pct').textContent=t.rev>0?fmtPct(t.margin/t.rev):'0%';
+  document.getElementById('kpi_hc').textContent=fmt(t.hc);
+  document.getElementById('kpi_hrs').textContent=fmt(t.hrs);
+}
+
+function updatePnL(){
+  const monthly=MONTHS.map((_,i)=>getMonthTotals(i));
+  const totals=monthly.reduce((a,t)=>{a.rev+=t.rev;a.cost+=t.cost;a.margin+=t.margin;return a},{rev:0,cost:0,margin:0});
+  const rows=[
+    {label:'Revenue (EUR)',key:'rev',cls:'positive'},
+    {label:'Total Cost (EUR)',key:'cost',cls:'negative'},
+    {label:'Gross Margin (EUR)',key:'margin',cls:''},
+    {label:'Margin %',key:'pct',cls:''},
+  ];
+  document.getElementById('pnlBody').innerHTML=rows.map(r=>{
+    const vals=monthly.map(t=>r.key==='pct'?(t.rev>0?fmtPct(t.margin/t.rev):'—'):'€'+fmt(t[r.key]));
+    const fyVal=r.key==='pct'?(totals.rev>0?fmtPct(totals.margin/totals.rev):'—'):'€'+fmt(totals[r.key]);
+    const cls=r.key==='margin'?(totals.margin>=0?'positive':'negative'):r.cls;
+    return`<tr class="${r.key==='margin'||r.key==='rev'?'total-row':''}">
+      <td>${r.label}</td>
+      ${vals.map(v=>`<td class="${r.key==='margin'?cls:r.cls}">${v}</td>`).join('')}
+      <td class="${cls}" style="font-weight:600">${fyVal}</td>
+    </tr>`;
+  }).join('');
+}
+
+function togglePanel(header){
+  const body=header.nextElementSibling;
+  const chevron=header.querySelector('.panel-chevron');
+  if(body.style.display==='none'){body.style.display='';chevron.classList.add('open')}
+  else{body.style.display='none';chevron.classList.remove('open')}
+}
+
+function showCopyHelper(){
+  const helper=document.getElementById('copyHelper');
+  document.getElementById('copyFrom').innerHTML=MONTHS.map((m,i)=>`<option value="${i}" ${i===activeMonth?'selected':''}>${m}</option>`).join('');
+  document.getElementById('copyTo').innerHTML=MONTHS.map((m,i)=>`<option value="${i}" ${i===(activeMonth+1)%12?'selected':''}>${m}</option>`).join('');
+  helper.style.display='flex';
+}
+
+function doCopy(){
+  const from=+document.getElementById('copyFrom').value;
+  const to=+document.getElementById('copyTo').value;
+  if(from===to){showToast('Source and destination are the same','error');return;}
+  state[to]=JSON.parse(JSON.stringify(state[from]));
+  showToast(`Copied ${MONTHS[from]} → ${MONTHS[to]}`,'success');
+  if(activeMonth===to)recalc();
+  document.getElementById('copyHelper').style.display='none';
+}
+
+function exportExcel(){
+  const wb=XLSX.utils.book_new();
+  const summaryData=[
+    ['CC Budget Export'],[''],
+    ['Global Settings',''],
+    ['Worked Hours/Agent/Month',+document.getElementById('g_hours').value],
+    ['Shrinkage %',+document.getElementById('g_shrink').value],
+    ['FX Rate (EUR=TRY)',+document.getElementById('g_fx').value],
+    ['CTC Multiplier',+document.getElementById('g_ctc').value],
+    ['Bonus % of Base',+document.getElementById('g_bonus_pct').value],
+    ['Meal Card (TRY/mo)',+document.getElementById('g_meal').value],
+    [''],
+    ['Month','Revenue (EUR)','Cost (EUR)','Margin (EUR)','Margin %','Total HC'],
+  ];
+  const totals={rev:0,cost:0,margin:0};
+  MONTHS.forEach((_,i)=>{
+    const t=getMonthTotals(i);
+    summaryData.push([MONTHS[i],t.rev,t.cost,t.margin,t.rev>0?t.margin/t.rev:0,t.hc]);
+    totals.rev+=t.rev;totals.cost+=t.cost;totals.margin+=t.margin;
+  });
+  summaryData.push(['Full Year',totals.rev,totals.cost,totals.margin,totals.rev>0?totals.margin/totals.rev:0,'']);
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(summaryData),'Summary');
+
+  const gShrink=+document.getElementById('g_shrink').value;
+  const gFx=+document.getElementById('g_fx').value;
+  const gHours=+document.getElementById('g_hours').value;
+  const ctc=+document.getElementById('g_ctc').value;
+  const bonus=+document.getElementById('g_bonus_pct').value;
+  const meal=+document.getElementById('g_meal').value;
+
+  MONTHS.forEach((m,mi)=>{
+    const rows=[['Language','HC','Base Salary (TRY)','Unit Price (EUR/hr)','Shrinkage Override','FX Override','Hours Override','Revenue (EUR)','Cost (EUR)','Margin (EUR)']];
+    state[mi].forEach(b=>{
+      const shrink=b.shrink!==null?b.shrink:gShrink;
+      const fx=b.fx!==null?b.fx:gFx;
+      const hours=b.hours!==null?b.hours:gHours;
+      const effHrs=hours*(1-shrink);
+      const rev=b.hc*effHrs*b.unitPrice;
+      const cost_eur=(b.hc*b.salary*ctc*(1+bonus)+b.hc*meal)/fx;
+      rows.push([b.lang,b.hc,b.salary,b.unitPrice,b.shrink!==null?b.shrink:'',b.fx!==null?b.fx:'',b.hours!==null?b.hours:'',rev,cost_eur,rev-cost_eur]);
+    });
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rows),m);
+  });
+  XLSX.writeFile(wb,'CC_Budget_Export.xlsx');
+  showToast('Excel exported successfully!','success');
+}
+
+function importExcel(e){
+  const file=e.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    try{
+      const wb=XLSX.read(ev.target.result,{type:'binary'});
+      const sum=wb.Sheets['Summary'];
+      if(sum){
+        const data=XLSX.utils.sheet_to_json(sum,{header:1});
+        const findVal=label=>{const row=data.find(r=>r[0]===label);return row?row[1]:null};
+        const setIf=(id,label)=>{const v=findVal(label);if(v!=null)document.getElementById(id).value=v};
+        setIf('g_hours','Worked Hours/Agent/Month');
+        setIf('g_shrink','Shrinkage %');
+        document.getElementById('g_shrink_val').textContent=(+document.getElementById('g_shrink').value*100).toFixed(0)+'%';
+        setIf('g_fx','FX Rate (EUR=TRY)');
+        setIf('g_ctc','CTC Multiplier');
+        setIf('g_bonus_pct','Bonus % of Base');
+        setIf('g_meal','Meal Card (TRY/mo)');
+      }
+      MONTHS.forEach((m,mi)=>{
+        const ws=wb.Sheets[m];
+        if(!ws)return;
+        state[mi]=[];
+        XLSX.utils.sheet_to_json(ws,{header:1}).slice(1).forEach(r=>{
+          if(r.length<4)return;
+          state[mi].push({lang:r[0]||'',hc:+r[1]||0,salary:+r[2]||0,unitPrice:+r[3]||0,
+            shrink:r[4]!==''&&r[4]!=null?+r[4]:null,
+            fx:r[5]!==''&&r[5]!=null?+r[5]:null,
+            hours:r[6]!==''&&r[6]!=null?+r[6]:null});
+        });
+      });
+      recalc();
+      showToast('Excel imported successfully!','success');
+    }catch(err){showToast('Import failed: '+err.message,'error')}
+    e.target.value='';
+  };
+  reader.readAsBinaryString(file);
+}
+
+function showToast(msg,type=''){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.className='toast show '+(type||'');
+  setTimeout(()=>t.className='toast',3000);
+}
+
+function adj(id,delta){
+  const el=document.getElementById(id);
+  el.value=(parseFloat(el.value)||0)+delta;
+  recalc();
+}
+
+buildMonthTabs();
+recalc();
+</script>
 </body>
 </html>
