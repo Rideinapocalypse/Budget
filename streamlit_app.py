@@ -1,585 +1,738 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>CC Budget App</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+import streamlit as st
+import pandas as pd
+from io import BytesIO
+
+# ============================
+# Page config
+# ============================
+st.set_page_config(page_title="Budget App", layout="wide")
+st.title("📊 Budget App")
+
+# ============================
+# UI: tighter spacing (smaller blocks)
+# ============================
+st.markdown(
+    """
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0e1117;
-  --surface:#161b27;
-  --surface2:#1e2535;
-  --surface3:#252d3f;
-  --border:#2a3347;
-  --border2:#344060;
-  --text:#e8edf5;
-  --text2:#8b96b0;
-  --text3:#5a6480;
-  --accent:#3b82f6;
-  --accent2:#60a5fa;
-  --green:#10b981;
-  --red:#ef4444;
-  --yellow:#f59e0b;
-  --purple:#8b5cf6;
-}
-html{scroll-behavior:smooth}
-body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px}
-::-webkit-scrollbar{width:6px;height:6px}
-::-webkit-scrollbar-track{background:var(--surface)}
-::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
-
-.app{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
-
-.sidebar{background:var(--surface);border-right:1px solid var(--border);padding:0;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
-.sidebar-header{padding:20px 20px 16px;border-bottom:1px solid var(--border)}
-.logo{display:flex;align-items:center;gap:10px;margin-bottom:4px}
-.logo-icon{width:32px;height:32px;background:var(--accent);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px}
-.logo-text{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:15px;letter-spacing:-0.03em}
-.logo-text span{color:var(--accent)}
-.logo-sub{font-size:11px;color:var(--text3);letter-spacing:0.04em;text-transform:uppercase;margin-top:2px}
-.sidebar-section{padding:16px 20px;border-bottom:1px solid var(--border)}
-.sidebar-section-title{font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text3);margin-bottom:12px}
-.field{margin-bottom:12px}
-.field:last-child{margin-bottom:0}
-.field label{display:block;font-size:11px;color:var(--text2);margin-bottom:5px;font-weight:500}
-.field-row{display:flex;align-items:center;gap:0}
-.field-row input{flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;font-family:'IBM Plex Mono',monospace;font-size:13px;border-radius:4px 0 0 4px;outline:none;transition:border-color .15s}
-.field-row input:focus{border-color:var(--accent)}
-.field-row .spin{width:28px;height:32px;background:var(--surface3);border:1px solid var(--border);color:var(--text2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s;border-left:none}
-.field-row .spin:last-of-type{border-radius:0 4px 4px 0}
-.field-row .spin:hover{background:var(--accent);color:white;border-color:var(--accent)}
-.field input[type=range]{width:100%;accent-color:var(--accent);cursor:pointer}
-.range-val{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--accent);text-align:right;margin-top:3px}
-select.field-select{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;font-family:'IBM Plex Sans',sans-serif;font-size:13px;border-radius:4px;outline:none;cursor:pointer}
-select.field-select:focus{border-color:var(--accent)}
-
-.month-tabs{display:flex;flex-wrap:wrap;gap:4px;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--surface)}
-.month-tab{font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;padding:5px 10px;border-radius:3px;border:1px solid var(--border);background:transparent;color:var(--text3);cursor:pointer;transition:all .15s}
-.month-tab:hover{border-color:var(--border2);color:var(--text2)}
-.month-tab.active{background:var(--accent);border-color:var(--accent);color:white}
-
-.main{padding:0;display:flex;flex-direction:column}
-.topbar{padding:16px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface);position:sticky;top:0;z-index:10}
-.topbar-title{font-size:18px;font-weight:600;letter-spacing:-0.02em}
-.topbar-title span{color:var(--accent);font-family:'IBM Plex Mono',monospace}
-.topbar-actions{display:flex;gap:8px}
-.btn{font-family:'IBM Plex Sans',sans-serif;font-size:12px;font-weight:600;padding:7px 14px;border-radius:4px;border:none;cursor:pointer;display:flex;align-items:center;gap:6px;letter-spacing:0.02em;transition:all .15s}
-.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--text2)}
-.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
-.btn-primary{background:var(--accent);color:white}
-.btn-primary:hover{background:var(--accent2)}
-.btn-green{background:var(--green);color:white}
-.btn-green:hover{opacity:.85}
-.btn-yellow{background:var(--yellow);color:#000}
-.btn-yellow:hover{opacity:.85}
-
-.content{padding:24px 28px;flex:1}
-
-.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:24px}
-.kpi-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;position:relative;overflow:hidden}
-.kpi-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--kpi-color,var(--accent))}
-.kpi-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;font-weight:600}
-.kpi-val{font-family:'IBM Plex Mono',monospace;font-size:18px;font-weight:600;color:var(--text)}
-.kpi-sub{font-size:10px;color:var(--text3);margin-top:3px}
-
-.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;overflow:hidden}
-.panel-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
-.panel-header:hover{background:var(--surface2)}
-.panel-title{font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:var(--text2);display:flex;align-items:center;gap:8px}
-.panel-title .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
-.panel-chevron{color:var(--text3);font-size:12px;transition:transform .2s}
-.panel-chevron.open{transform:rotate(180deg)}
-.panel-body{padding:16px}
-
-.prod-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr auto;gap:10px;align-items:end;margin-bottom:10px}
-.prod-field label{font-size:10px;color:var(--text3);margin-bottom:4px;display:block;font-weight:500}
-.prod-field input{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;font-family:'IBM Plex Mono',monospace;font-size:13px;border-radius:4px;outline:none;transition:border-color .15s}
-.prod-field input:focus{border-color:var(--accent)}
-.prod-result{background:var(--surface3);border:1px solid var(--border);border-radius:4px;padding:7px 10px}
-.prod-result-label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px}
-.prod-result-val{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--green);font-weight:500}
-.remove-btn{width:30px;height:30px;background:transparent;border:1px solid var(--border);color:var(--text3);border-radius:4px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s;align-self:end}
-.remove-btn:hover{background:var(--red);border-color:var(--red);color:white}
-.add-block-btn{width:100%;padding:10px;background:transparent;border:1px dashed var(--border2);color:var(--text3);border-radius:4px;cursor:pointer;font-family:'IBM Plex Sans',sans-serif;font-size:12px;font-weight:500;transition:all .15s;margin-top:12px}
-.add-block-btn:hover{border-color:var(--accent);color:var(--accent);background:rgba(59,130,246,0.05)}
-
-.pnl-table{width:100%;border-collapse:collapse;font-size:12px}
-.pnl-table th{font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:var(--text3);padding:8px 10px;text-align:right;border-bottom:1px solid var(--border)}
-.pnl-table th:first-child{text-align:left}
-.pnl-table td{padding:8px 10px;border-bottom:1px solid var(--border);font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:var(--text2)}
-.pnl-table td:first-child{text-align:left;font-family:'IBM Plex Sans',sans-serif;color:var(--text)}
-.pnl-table tr:last-child td{border-bottom:none}
-.pnl-table .total-row td{background:var(--surface2);font-weight:600;color:var(--text)}
-.pnl-table .positive{color:var(--green)}
-.pnl-table .negative{color:var(--red)}
-
-.copy-helper{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:var(--surface2);border-radius:6px;margin-bottom:16px}
-.copy-helper label{font-size:12px;color:var(--text2)}
-.copy-helper select{background:var(--surface3);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:4px;font-size:12px;outline:none;cursor:pointer}
-
-.toast{position:fixed;bottom:24px;right:24px;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:12px 18px;border-radius:6px;font-size:13px;font-weight:500;z-index:1000;opacity:0;transform:translateY(10px);transition:all .3s;pointer-events:none}
-.toast.show{opacity:1;transform:translateY(0)}
-.toast.success{border-color:var(--green);color:var(--green)}
-.toast.error{border-color:var(--red);color:var(--red)}
-
-.section-label{font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--text3);margin-bottom:12px;margin-top:24px;display:flex;align-items:center;gap:8px}
-.section-label::after{content:'';flex:1;height:1px;background:var(--border)}
-
-@media(max-width:900px){
-  .app{grid-template-columns:1fr}
-  .sidebar{position:relative;height:auto}
-  .kpi-row{grid-template-columns:repeat(2,1fr)}
-}
+div.block-container {padding-top: 1.0rem; padding-bottom: 1.0rem; max-width: 1400px;}
+div[data-testid="stVerticalBlock"] > div {gap: 0.35rem;}
+[data-testid="stMetric"] {padding: 6px 10px;}
+[data-testid="stMetricLabel"] {font-size: 0.80rem;}
+[data-testid="stMetricValue"] {font-size: 1.05rem;}
+h3 {margin-top: 0.4rem;}
 </style>
-</head>
-<body>
+""",
+    unsafe_allow_html=True,
+)
 
-<div class="app">
-<aside class="sidebar">
-  <div class="sidebar-header">
-    <div class="logo">
-      <div class="logo-icon">📞</div>
-      <div>
-        <div class="logo-text"><span>CC</span>Budget</div>
-        <div class="logo-sub">Call Center Forecast</div>
-      </div>
-    </div>
-  </div>
+# ============================
+# Constants
+# ============================
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+          "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-  <div class="sidebar-section">
-    <div class="sidebar-section-title">Global Inputs</div>
-    <div class="field">
-      <label>Worked Hours / Agent / Month</label>
-      <div class="field-row">
-        <input type="number" id="g_hours" value="180" step="1" oninput="recalc()"/>
-        <button class="spin" onclick="adj('g_hours',-1)">−</button>
-        <button class="spin" onclick="adj('g_hours',1)">+</button>
-      </div>
-    </div>
-    <div class="field">
-      <label>Shrinkage % (default)</label>
-      <input type="range" id="g_shrink" min="0" max="0.5" step="0.01" value="0.15" oninput="document.getElementById('g_shrink_val').textContent=(+this.value*100).toFixed(0)+'%';recalc()"/>
-      <div class="range-val" id="g_shrink_val">15%</div>
-    </div>
-    <div class="field">
-      <label>FX Rate (1 EUR = TRY) [default]</label>
-      <div class="field-row">
-        <input type="number" id="g_fx" value="38" step="0.5" oninput="recalc()"/>
-        <button class="spin" onclick="adj('g_fx',-0.5)">−</button>
-        <button class="spin" onclick="adj('g_fx',0.5)">+</button>
-      </div>
-    </div>
-  </div>
+default_langs = ["DE", "EN", "TR", "FR", "IT", "NL"]
+default_roles = ["Team Manager", "QA", "Ops", "Trainer", "RTA/WFM"]
 
-  <div class="sidebar-section">
-    <div class="sidebar-section-title">Global Cost Drivers</div>
-    <div class="field">
-      <label>Salary Multiplier (CTC)</label>
-      <div class="field-row">
-        <input type="number" id="g_ctc" value="1.70" step="0.05" oninput="recalc()"/>
-        <button class="spin" onclick="adj('g_ctc',-0.05)">−</button>
-        <button class="spin" onclick="adj('g_ctc',0.05)">+</button>
-      </div>
-    </div>
-    <div class="field">
-      <label>Bonus % of Base Salary</label>
-      <div class="field-row">
-        <input type="number" id="g_bonus_pct" value="0.10" step="0.01" oninput="recalc()"/>
-        <button class="spin" onclick="adj('g_bonus_pct',-0.01)">−</button>
-        <button class="spin" onclick="adj('g_bonus_pct',0.01)">+</button>
-      </div>
-    </div>
-    <div class="field">
-      <label>Meal Card / Agent / Month (TRY)</label>
-      <div class="field-row">
-        <input type="number" id="g_meal" value="5850" step="50" oninput="recalc()"/>
-        <button class="spin" onclick="adj('g_meal',-50)">−</button>
-        <button class="spin" onclick="adj('g_meal',50)">+</button>
-      </div>
-    </div>
-    <div class="field">
-      <label>Unit Price Currency</label>
-      <select class="field-select" id="g_currency" onchange="recalc()">
-        <option value="EUR">EUR</option>
-        <option value="USD">USD</option>
-        <option value="TRY">TRY</option>
-      </select>
-    </div>
-  </div>
+# ============================
+# Helpers
+# ============================
+def fmt0(x: float) -> str:
+    return f"{x:,.0f}"
 
-  <div class="sidebar-section">
-    <div class="sidebar-section-title">Month Navigation</div>
-    <div id="monthTabs" style="display:flex;flex-wrap:wrap;gap:4px"></div>
-  </div>
+def normalize_month(m):
+    """Accept Jan/January/1..12/Excel dates/timestamps."""
+    if m is None:
+        return None
+    try:
+        if pd.isna(m):
+            return None
+    except Exception:
+        pass
 
-  <div class="sidebar-section" style="margin-top:auto">
-    <div class="sidebar-section-title">Data</div>
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <button class="btn btn-green" onclick="exportExcel()" style="width:100%;justify-content:center">⬇ Export Excel</button>
-      <button class="btn btn-ghost" onclick="document.getElementById('fileInput').click()" style="width:100%;justify-content:center">⬆ Import Excel</button>
-      <input type="file" id="fileInput" accept=".xlsx" onchange="importExcel(event)" style="display:none"/>
-    </div>
-  </div>
-</aside>
+    # datetime-like (Timestamp)
+    try:
+        if hasattr(m, "month"):
+            mn = int(m.month)
+            if 1 <= mn <= 12:
+                return MONTHS[mn - 1]
+    except Exception:
+        pass
 
-<main class="main">
-  <div class="topbar">
-    <div class="topbar-title">Budget — <span id="activeMonthLabel">Jan</span></div>
-    <div class="topbar-actions">
-      <button class="btn btn-ghost" onclick="addBlock()">+ Add Block</button>
-      <button class="btn btn-yellow" onclick="showCopyHelper()">📋 Copy Month</button>
-    </div>
-  </div>
+    # numeric month
+    try:
+        if isinstance(m, (int, float)) and 1 <= int(m) <= 12:
+            return MONTHS[int(m) - 1]
+    except Exception:
+        pass
 
-  <div class="content">
-    <div class="kpi-row">
-      <div class="kpi-card" style="--kpi-color:var(--accent)">
-        <div class="kpi-label">Total Revenue</div>
-        <div class="kpi-val" id="kpi_rev">€0</div>
-        <div class="kpi-sub">EUR this month</div>
-      </div>
-      <div class="kpi-card" style="--kpi-color:var(--red)">
-        <div class="kpi-label">Total Cost</div>
-        <div class="kpi-val" id="kpi_cost">€0</div>
-        <div class="kpi-sub">EUR this month</div>
-      </div>
-      <div class="kpi-card" style="--kpi-color:var(--green)">
-        <div class="kpi-label">Gross Margin</div>
-        <div class="kpi-val" id="kpi_margin">€0</div>
-        <div class="kpi-sub" id="kpi_margin_pct">0%</div>
-      </div>
-      <div class="kpi-card" style="--kpi-color:var(--yellow)">
-        <div class="kpi-label">Total HC</div>
-        <div class="kpi-val" id="kpi_hc">0</div>
-        <div class="kpi-sub">agents this month</div>
-      </div>
-      <div class="kpi-card" style="--kpi-color:var(--purple)">
-        <div class="kpi-label">Effective Hours</div>
-        <div class="kpi-val" id="kpi_hrs">0</div>
-        <div class="kpi-sub">billable hrs/month</div>
-      </div>
-    </div>
+    s = str(m).strip()
+    full_to_short = {
+        "january": "Jan", "february": "Feb", "march": "Mar", "april": "Apr",
+        "may": "May", "june": "Jun", "july": "Jul", "august": "Aug",
+        "september": "Sep", "october": "Oct", "november": "Nov", "december": "Dec"
+    }
+    s_lower = s.lower()
+    if s_lower in full_to_short:
+        return full_to_short[s_lower]
 
-    <div class="copy-helper" id="copyHelper" style="display:none">
-      <span>📋</span>
-      <label>Copy</label>
-      <select id="copyFrom"></select>
-      <label>→ to →</label>
-      <select id="copyTo"></select>
-      <button class="btn btn-yellow" onclick="doCopy()">Copy</button>
-      <button class="btn btn-ghost" onclick="document.getElementById('copyHelper').style.display='none'">✕</button>
-    </div>
+    mapping = {x.lower(): x for x in MONTHS}
+    return mapping.get(s_lower, None)
 
-    <div class="section-label">Production Blocks</div>
-    <div id="blocksContainer"></div>
-    <button class="add-block-btn" onclick="addBlock()">+ Add Production Block</button>
-
-    <div class="section-label" style="margin-top:32px">P&L Summary — Full Year</div>
-    <div class="panel">
-      <div class="panel-header" onclick="togglePanel(this)">
-        <div class="panel-title"><span class="dot" style="background:var(--green)"></span>Annual P&L Overview</div>
-        <span class="panel-chevron open">▼</span>
-      </div>
-      <div class="panel-body" style="overflow-x:auto">
-        <table class="pnl-table" id="pnlTable">
-          <thead>
-            <tr>
-              <th style="text-align:left">Line Item</th>
-              <th>Jan</th><th>Feb</th><th>Mar</th><th>Apr</th><th>May</th><th>Jun</th>
-              <th>Jul</th><th>Aug</th><th>Sep</th><th>Oct</th><th>Nov</th><th>Dec</th>
-              <th>Full Year</th>
-            </tr>
-          </thead>
-          <tbody id="pnlBody"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</main>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-let activeMonth = 0;
-let state = {};
-MONTHS.forEach((_,i) => { state[i] = []; });
-
-function buildMonthTabs(){
-  const el = document.getElementById('monthTabs');
-  el.innerHTML = MONTHS.map((m,i)=>`<button class="month-tab ${i===activeMonth?'active':''}" onclick="setMonth(${i})">${m}</button>`).join('');
-}
-
-function setMonth(i){
-  activeMonth = i;
-  document.getElementById('activeMonthLabel').textContent = MONTHS[i];
-  buildMonthTabs();
-  renderBlocks();
-  recalc();
-}
-
-function addBlock(data){
-  state[activeMonth].push(data || {lang:'',hc:0,salary:0,unitPrice:0,shrink:null,fx:null,hours:null});
-  renderBlocks();
-  recalc();
-}
-
-function removeBlock(idx){
-  state[activeMonth].splice(idx,1);
-  renderBlocks();
-  recalc();
-}
-
-function updateBlock(idx,field,val){
-  state[activeMonth][idx][field] = val;
-  recalc();
-}
-
-function renderBlocks(){
-  const m = activeMonth;
-  const blocks = state[m];
-  const container = document.getElementById('blocksContainer');
-  if(blocks.length===0){
-    container.innerHTML=`<div style="text-align:center;padding:32px;color:var(--text3);font-size:13px">No production blocks for ${MONTHS[m]}. Click "+ Add Block" to start.</div>`;
-    return;
-  }
-  container.innerHTML = blocks.map((b,i)=>{
-    const shrinkVal = b.shrink!==null?b.shrink:+document.getElementById('g_shrink').value;
-    const fxVal = b.fx!==null?b.fx:+document.getElementById('g_fx').value;
-    const hoursVal = b.hours!==null?b.hours:+document.getElementById('g_hours').value;
-    const effHrs = hoursVal*(1-shrinkVal);
-    const rev = b.hc*effHrs*b.unitPrice;
-    const ctc = +document.getElementById('g_ctc').value;
-    const bonus = +document.getElementById('g_bonus_pct').value;
-    const meal = +document.getElementById('g_meal').value;
-    const totalCost_eur = (b.hc*b.salary*ctc*(1+bonus)+b.hc*meal)/fxVal;
-    const margin = rev-totalCost_eur;
-    const colors = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444'];
-    return `
-    <div class="panel" style="margin-bottom:10px">
-      <div class="panel-header" onclick="togglePanel(this)" style="padding:10px 16px">
-        <div class="panel-title">
-          <span class="dot" style="background:${colors[i%5]}"></span>
-          Block #${i+1}${b.lang?' — '+b.lang:''}
-          <span style="font-size:10px;color:var(--text3);font-weight:400;margin-left:8px">${b.hc} HC · €${fmt(rev)} rev · €${fmt(margin)} margin</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <button class="remove-btn" onclick="event.stopPropagation();removeBlock(${i})">✕</button>
-          <span class="panel-chevron open">▼</span>
-        </div>
-      </div>
-      <div class="panel-body">
-        <div class="prod-grid">
-          <div class="prod-field"><label>Language / Label</label><input type="text" value="${b.lang}" placeholder="e.g. DE, EN, TR" oninput="updateBlock(${i},'lang',this.value)"/></div>
-          <div class="prod-field"><label>Headcount (HC)</label><input type="number" value="${b.hc}" step="1" min="0" oninput="updateBlock(${i},'hc',+this.value)"/></div>
-          <div class="prod-field"><label>Base Salary (TRY/mo)</label><input type="number" value="${b.salary}" step="100" min="0" oninput="updateBlock(${i},'salary',+this.value)"/></div>
-          <div class="prod-field"><label>Unit Price (EUR/hr)</label><input type="number" value="${b.unitPrice}" step="0.1" min="0" oninput="updateBlock(${i},'unitPrice',+this.value)"/></div>
-          <div></div>
-        </div>
-        <div class="prod-grid" style="grid-template-columns:1fr 1fr 1fr 1fr auto">
-          <div class="prod-field"><label>Shrinkage % (override)</label><input type="number" value="${b.shrink!==null?b.shrink:''}" placeholder="Global: ${(+document.getElementById('g_shrink').value*100).toFixed(0)}%" step="0.01" oninput="updateBlock(${i},'shrink',this.value===''?null:+this.value)"/></div>
-          <div class="prod-field"><label>FX Rate (override)</label><input type="number" value="${b.fx!==null?b.fx:''}" placeholder="Global: ${document.getElementById('g_fx').value}" step="0.5" oninput="updateBlock(${i},'fx',this.value===''?null:+this.value)"/></div>
-          <div class="prod-field"><label>Hours/Agent (override)</label><input type="number" value="${b.hours!==null?b.hours:''}" placeholder="Global: ${document.getElementById('g_hours').value}" step="1" oninput="updateBlock(${i},'hours',this.value===''?null:+this.value)"/></div>
-          <div><div class="prod-result"><div class="prod-result-label">Revenue (EUR)</div><div class="prod-result-val">€${fmt(rev)}</div></div></div>
-          <div><div class="prod-result"><div class="prod-result-label">Margin (EUR)</div><div class="prod-result-val" style="color:${margin>=0?'var(--green)':'var(--red)'}">€${fmt(margin)}</div></div></div>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function fmt(n){return Number(n).toLocaleString('en',{minimumFractionDigits:0,maximumFractionDigits:0})}
-function fmtPct(n){return (n*100).toFixed(1)+'%'}
-
-function recalc(){
-  renderBlocks();
-  updateKPIs();
-  updatePnL();
-}
-
-function getMonthTotals(m){
-  const blocks = state[m];
-  const gShrink=+document.getElementById('g_shrink').value;
-  const gFx=+document.getElementById('g_fx').value;
-  const gHours=+document.getElementById('g_hours').value;
-  const ctc=+document.getElementById('g_ctc').value;
-  const bonus=+document.getElementById('g_bonus_pct').value;
-  const meal=+document.getElementById('g_meal').value;
-  let totalRev=0,totalCostEur=0,totalHC=0,totalHrs=0;
-  blocks.forEach(b=>{
-    const shrink=b.shrink!==null?b.shrink:gShrink;
-    const fx=b.fx!==null?b.fx:gFx;
-    const hours=b.hours!==null?b.hours:gHours;
-    const effHrs=hours*(1-shrink);
-    totalRev+=b.hc*effHrs*b.unitPrice;
-    totalCostEur+=(b.hc*b.salary*ctc*(1+bonus)+b.hc*meal)/fx;
-    totalHC+=+b.hc;
-    totalHrs+=b.hc*effHrs;
-  });
-  return{rev:totalRev,cost:totalCostEur,margin:totalRev-totalCostEur,hc:totalHC,hrs:totalHrs};
-}
-
-function updateKPIs(){
-  const t=getMonthTotals(activeMonth);
-  document.getElementById('kpi_rev').textContent='€'+fmt(t.rev);
-  document.getElementById('kpi_cost').textContent='€'+fmt(t.cost);
-  document.getElementById('kpi_margin').textContent='€'+fmt(t.margin);
-  document.getElementById('kpi_margin').style.color=t.margin>=0?'var(--green)':'var(--red)';
-  document.getElementById('kpi_margin_pct').textContent=t.rev>0?fmtPct(t.margin/t.rev):'0%';
-  document.getElementById('kpi_hc').textContent=fmt(t.hc);
-  document.getElementById('kpi_hrs').textContent=fmt(t.hrs);
-}
-
-function updatePnL(){
-  const monthly=MONTHS.map((_,i)=>getMonthTotals(i));
-  const totals=monthly.reduce((a,t)=>{a.rev+=t.rev;a.cost+=t.cost;a.margin+=t.margin;return a},{rev:0,cost:0,margin:0});
-  const rows=[
-    {label:'Revenue (EUR)',key:'rev',cls:'positive'},
-    {label:'Total Cost (EUR)',key:'cost',cls:'negative'},
-    {label:'Gross Margin (EUR)',key:'margin',cls:''},
-    {label:'Margin %',key:'pct',cls:''},
-  ];
-  document.getElementById('pnlBody').innerHTML=rows.map(r=>{
-    const vals=monthly.map(t=>r.key==='pct'?(t.rev>0?fmtPct(t.margin/t.rev):'—'):'€'+fmt(t[r.key]));
-    const fyVal=r.key==='pct'?(totals.rev>0?fmtPct(totals.margin/totals.rev):'—'):'€'+fmt(totals[r.key]);
-    const cls=r.key==='margin'?(totals.margin>=0?'positive':'negative'):r.cls;
-    return`<tr class="${r.key==='margin'||r.key==='rev'?'total-row':''}">
-      <td>${r.label}</td>
-      ${vals.map(v=>`<td class="${r.key==='margin'?cls:r.cls}">${v}</td>`).join('')}
-      <td class="${cls}" style="font-weight:600">${fyVal}</td>
-    </tr>`;
-  }).join('');
-}
-
-function togglePanel(header){
-  const body=header.nextElementSibling;
-  const chevron=header.querySelector('.panel-chevron');
-  if(body.style.display==='none'){body.style.display='';chevron.classList.add('open')}
-  else{body.style.display='none';chevron.classList.remove('open')}
-}
-
-function showCopyHelper(){
-  const helper=document.getElementById('copyHelper');
-  document.getElementById('copyFrom').innerHTML=MONTHS.map((m,i)=>`<option value="${i}" ${i===activeMonth?'selected':''}>${m}</option>`).join('');
-  document.getElementById('copyTo').innerHTML=MONTHS.map((m,i)=>`<option value="${i}" ${i===(activeMonth+1)%12?'selected':''}>${m}</option>`).join('');
-  helper.style.display='flex';
-}
-
-function doCopy(){
-  const from=+document.getElementById('copyFrom').value;
-  const to=+document.getElementById('copyTo').value;
-  if(from===to){showToast('Source and destination are the same','error');return;}
-  state[to]=JSON.parse(JSON.stringify(state[from]));
-  showToast(`Copied ${MONTHS[from]} → ${MONTHS[to]}`,'success');
-  if(activeMonth===to)recalc();
-  document.getElementById('copyHelper').style.display='none';
-}
-
-function exportExcel(){
-  const wb=XLSX.utils.book_new();
-  const summaryData=[
-    ['CC Budget Export'],[''],
-    ['Global Settings',''],
-    ['Worked Hours/Agent/Month',+document.getElementById('g_hours').value],
-    ['Shrinkage %',+document.getElementById('g_shrink').value],
-    ['FX Rate (EUR=TRY)',+document.getElementById('g_fx').value],
-    ['CTC Multiplier',+document.getElementById('g_ctc').value],
-    ['Bonus % of Base',+document.getElementById('g_bonus_pct').value],
-    ['Meal Card (TRY/mo)',+document.getElementById('g_meal').value],
-    [''],
-    ['Month','Revenue (EUR)','Cost (EUR)','Margin (EUR)','Margin %','Total HC'],
-  ];
-  const totals={rev:0,cost:0,margin:0};
-  MONTHS.forEach((_,i)=>{
-    const t=getMonthTotals(i);
-    summaryData.push([MONTHS[i],t.rev,t.cost,t.margin,t.rev>0?t.margin/t.rev:0,t.hc]);
-    totals.rev+=t.rev;totals.cost+=t.cost;totals.margin+=t.margin;
-  });
-  summaryData.push(['Full Year',totals.rev,totals.cost,totals.margin,totals.rev>0?totals.margin/totals.rev:0,'']);
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(summaryData),'Summary');
-
-  const gShrink=+document.getElementById('g_shrink').value;
-  const gFx=+document.getElementById('g_fx').value;
-  const gHours=+document.getElementById('g_hours').value;
-  const ctc=+document.getElementById('g_ctc').value;
-  const bonus=+document.getElementById('g_bonus_pct').value;
-  const meal=+document.getElementById('g_meal').value;
-
-  MONTHS.forEach((m,mi)=>{
-    const rows=[['Language','HC','Base Salary (TRY)','Unit Price (EUR/hr)','Shrinkage Override','FX Override','Hours Override','Revenue (EUR)','Cost (EUR)','Margin (EUR)']];
-    state[mi].forEach(b=>{
-      const shrink=b.shrink!==null?b.shrink:gShrink;
-      const fx=b.fx!==null?b.fx:gFx;
-      const hours=b.hours!==null?b.hours:gHours;
-      const effHrs=hours*(1-shrink);
-      const rev=b.hc*effHrs*b.unitPrice;
-      const cost_eur=(b.hc*b.salary*ctc*(1+bonus)+b.hc*meal)/fx;
-      rows.push([b.lang,b.hc,b.salary,b.unitPrice,b.shrink!==null?b.shrink:'',b.fx!==null?b.fx:'',b.hours!==null?b.hours:'',rev,cost_eur,rev-cost_eur]);
-    });
-    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rows),m);
-  });
-  XLSX.writeFile(wb,'CC_Budget_Export.xlsx');
-  showToast('Excel exported successfully!','success');
-}
-
-function importExcel(e){
-  const file=e.target.files[0];
-  if(!file)return;
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    try{
-      const wb=XLSX.read(ev.target.result,{type:'binary'});
-      const sum=wb.Sheets['Summary'];
-      if(sum){
-        const data=XLSX.utils.sheet_to_json(sum,{header:1});
-        const findVal=label=>{const row=data.find(r=>r[0]===label);return row?row[1]:null};
-        const setIf=(id,label)=>{const v=findVal(label);if(v!=null)document.getElementById(id).value=v};
-        setIf('g_hours','Worked Hours/Agent/Month');
-        setIf('g_shrink','Shrinkage %');
-        document.getElementById('g_shrink_val').textContent=(+document.getElementById('g_shrink').value*100).toFixed(0)+'%';
-        setIf('g_fx','FX Rate (EUR=TRY)');
-        setIf('g_ctc','CTC Multiplier');
-        setIf('g_bonus_pct','Bonus % of Base');
-        setIf('g_meal','Meal Card (TRY/mo)');
+def ensure_storage():
+    """
+    Central truth:
+      st.session_state["data"]["months"][month] = {
+        "inputs": {...},
+        "prod": list of 6 dicts,
+        "oh": list of 5 dicts
       }
-      MONTHS.forEach((m,mi)=>{
-        const ws=wb.Sheets[m];
-        if(!ws)return;
-        state[mi]=[];
-        XLSX.utils.sheet_to_json(ws,{header:1}).slice(1).forEach(r=>{
-          if(r.length<4)return;
-          state[mi].push({lang:r[0]||'',hc:+r[1]||0,salary:+r[2]||0,unitPrice:+r[3]||0,
-            shrink:r[4]!==''&&r[4]!=null?+r[4]:null,
-            fx:r[5]!==''&&r[5]!=null?+r[5]:null,
-            hours:r[6]!==''&&r[6]!=null?+r[6]:null});
-        });
-      });
-      recalc();
-      showToast('Excel imported successfully!','success');
-    }catch(err){showToast('Import failed: '+err.message,'error')}
-    e.target.value='';
-  };
-  reader.readAsBinaryString(file);
-}
+    """
+    if "data" in st.session_state:
+        return
 
-function showToast(msg,type=''){
-  const t=document.getElementById('toast');
-  t.textContent=msg;t.className='toast show '+(type||'');
-  setTimeout(()=>t.className='toast',3000);
-}
+    st.session_state["data"] = {"months": {}}
+    for m in MONTHS:
+        st.session_state["data"]["months"][m] = {
+            "inputs": {
+                "fx": None,
+                "worked_hours": None,
+                "shrinkage": None,
+            },
+            "prod": [
+                {"lang": default_langs[i], "hc": 0.0, "salary": 0.0, "up": 0.0}
+                for i in range(6)
+            ],
+            "oh": [
+                {"role": default_roles[i], "hc": 0.0, "salary": 0.0}
+                for i in range(5)
+            ],
+        }
 
-function adj(id,delta){
-  const el=document.getElementById(id);
-  el.value=(parseFloat(el.value)||0)+delta;
-  recalc();
-}
+def get_month_data(month: str) -> dict:
+    ensure_storage()
+    return st.session_state["data"]["months"][month]
 
-buildMonthTabs();
-recalc();
-</script>
-</body>
-</html>
+def save_widgets_to_month(month: str):
+    """Save current widget values into central storage for that month."""
+    md = get_month_data(month)
+
+    # month-specific overrides
+    md["inputs"]["fx"] = st.session_state.get("w_fx_month", md["inputs"]["fx"])
+    md["inputs"]["worked_hours"] = st.session_state.get("w_wh_month", md["inputs"]["worked_hours"])
+    md["inputs"]["shrinkage"] = st.session_state.get("w_sh_month", md["inputs"]["shrinkage"])
+
+    # production
+    for i in range(6):
+        md["prod"][i]["lang"] = st.session_state.get(f"w_lang_{i}", md["prod"][i]["lang"])
+        md["prod"][i]["hc"] = float(st.session_state.get(f"w_hc_{i}", md["prod"][i]["hc"]))
+        md["prod"][i]["salary"] = float(st.session_state.get(f"w_sal_{i}", md["prod"][i]["salary"]))
+        md["prod"][i]["up"] = float(st.session_state.get(f"w_up_{i}", md["prod"][i]["up"]))
+
+    # overhead
+    for i in range(5):
+        md["oh"][i]["role"] = st.session_state.get(f"w_role_{i}", md["oh"][i]["role"])
+        md["oh"][i]["hc"] = float(st.session_state.get(f"w_oh_hc_{i}", md["oh"][i]["hc"]))
+        md["oh"][i]["salary"] = float(st.session_state.get(f"w_oh_sal_{i}", md["oh"][i]["salary"]))
+
+def load_month_to_widgets(month: str, defaults: dict):
+    """
+    Load month data into session_state widget keys BEFORE widgets are created.
+    Do NOT call this after widgets exist in the same run.
+    """
+    md = get_month_data(month)
+
+    fx = md["inputs"]["fx"] if md["inputs"]["fx"] is not None else defaults["fx_default"]
+    wh = md["inputs"]["worked_hours"] if md["inputs"]["worked_hours"] is not None else defaults["wh_default"]
+    sh = md["inputs"]["shrinkage"] if md["inputs"]["shrinkage"] is not None else defaults["sh_default"]
+
+    st.session_state["w_fx_month"] = float(fx)
+    st.session_state["w_wh_month"] = float(wh)
+    st.session_state["w_sh_month"] = float(sh)
+
+    for i in range(6):
+        st.session_state[f"w_lang_{i}"] = md["prod"][i]["lang"]
+        st.session_state[f"w_hc_{i}"] = float(md["prod"][i]["hc"])
+        st.session_state[f"w_sal_{i}"] = float(md["prod"][i]["salary"])
+        st.session_state[f"w_up_{i}"] = float(md["prod"][i]["up"])
+
+    for i in range(5):
+        st.session_state[f"w_role_{i}"] = md["oh"][i]["role"]
+        st.session_state[f"w_oh_hc_{i}"] = float(md["oh"][i]["hc"])
+        st.session_state[f"w_oh_sal_{i}"] = float(md["oh"][i]["salary"])
+
+# ============================
+# Sidebar defaults (global)
+# ============================
+st.sidebar.header("Global Inputs")
+
+wh_default = st.sidebar.number_input(
+    "Worked Hours per Agent (Monthly) [default]",
+    value=180.0, step=1.0, min_value=0.0
+)
+sh_default = st.sidebar.slider(
+    "Shrinkage (%) [default]",
+    min_value=0.0, max_value=0.5, value=0.15, step=0.01
+)
+
+st.sidebar.divider()
+st.sidebar.subheader("Global Cost Drivers")
+
+salary_multiplier = st.sidebar.number_input("Salary Multiplier", value=1.70, step=0.05, min_value=0.0)
+
+bonus_pct = st.sidebar.number_input(
+    "Bonus % (of Base Salary)", value=0.10, step=0.01, min_value=0.0, max_value=5.0
+)
+
+bonus_multiplier = st.sidebar.number_input(
+    "Bonus Multiplier", value=1.00, step=0.05, min_value=0.0
+)
+
+meal_card = st.sidebar.number_input(
+    "Meal Card per Agent (Monthly TRY)", value=5850.0, step=100.0, min_value=0.0
+)
+
+st.sidebar.divider()
+currency = st.sidebar.selectbox("Unit Price Currency", ["EUR", "USD"])
+fx_default = st.sidebar.number_input(
+    f"FX Rate (1 {currency} = TRY) [default]",
+    value=38.0 if currency == "EUR" else 35.0,
+    step=0.1,
+    min_value=0.0
+)
+
+defaults_pack = {"wh_default": wh_default, "sh_default": sh_default, "fx_default": fx_default}
+
+# ============================
+# Month selection + controlled save/load
+# ============================
+st.sidebar.divider()
+st.sidebar.subheader("Month Filter")
+
+ensure_storage()
+
+if "selected_month" not in st.session_state:
+    st.session_state["selected_month"] = MONTHS[0]
+if "prev_month" not in st.session_state:
+    st.session_state["prev_month"] = st.session_state["selected_month"]
+
+def on_month_change():
+    prev = st.session_state.get("prev_month", MONTHS[0])
+    new = st.session_state.get("selected_month", MONTHS[0])
+    save_widgets_to_month(prev)
+    st.session_state["pending_reload_month"] = new
+    st.session_state["prev_month"] = new
+    st.rerun()
+
+st.sidebar.selectbox(
+    "Select Month",
+    MONTHS,
+    key="selected_month",
+    on_change=on_month_change
+)
+
+view_mode = st.sidebar.radio(
+    "View",
+    ["Selected Month", "All Months (Trend)"],
+    index=0
+)
+
+selected_month = st.session_state["selected_month"]
+
+# ============================
+# Handle pending reload BEFORE widgets exist
+# ============================
+if st.session_state.get("pending_reload_month"):
+    m = st.session_state.pop("pending_reload_month")
+    load_month_to_widgets(m, defaults_pack)
+    st.session_state["_widgets_loaded"] = m
+    st.session_state["prev_month"] = m
+
+# first-time load
+if st.session_state.get("_widgets_loaded") != selected_month:
+    load_month_to_widgets(selected_month, defaults_pack)
+    st.session_state["_widgets_loaded"] = selected_month
+    st.session_state["prev_month"] = selected_month
+
+# ============================
+# Core calcs
+# ============================
+def calculate_agent_cost(base_salary_try: float) -> float:
+    bonus = base_salary_try * bonus_pct * bonus_multiplier
+    gross = base_salary_try + bonus
+    loaded = gross * salary_multiplier
+    return loaded + meal_card
+
+def compute_from_month_store(month: str):
+    md = get_month_data(month)
+
+    fx = md["inputs"]["fx"] if md["inputs"]["fx"] is not None else fx_default
+    wh = md["inputs"]["worked_hours"] if md["inputs"]["worked_hours"] is not None else wh_default
+    sh = md["inputs"]["shrinkage"] if md["inputs"]["shrinkage"] is not None else sh_default
+    prod_hours = wh * (1 - sh)
+
+    def try_from_currency_month(x: float) -> float:
+        return x * float(fx)
+
+    prod_rows = []
+    total_prod_cost = 0.0
+    total_revenue = 0.0
+
+    for i in range(6):
+        row = md["prod"][i]
+        lang = row["lang"]
+        hc = float(row["hc"])
+        salary = float(row["salary"])
+        up_cur = float(row["up"])
+
+        up_try = try_from_currency_month(up_cur)
+        cost_per = calculate_agent_cost(salary)
+        total_cost = hc * cost_per
+        revenue = hc * prod_hours * up_try
+        margin = revenue - total_cost
+
+        total_prod_cost += total_cost
+        total_revenue += revenue
+
+        prod_rows.append({
+            "Month": month,
+            "Language": lang,
+            "HC": hc,
+            "Base Salary (TRY)": salary,
+            f"Unit Price ({currency})": up_cur,
+            "FX Rate": float(fx),
+            "Worked Hours": float(wh),
+            "Shrinkage": float(sh),
+            "Productive Hours": float(prod_hours),
+            "Unit Price (TRY)": up_try,
+            "Cost/Agent (TRY)": cost_per,
+            "Total Cost (TRY)": total_cost,
+            "Revenue (TRY)": revenue,
+            "Margin (TRY)": margin,
+            "Bonus %": bonus_pct,
+            "Bonus Multiplier": bonus_multiplier,
+            "Salary Multiplier": salary_multiplier,
+            "Meal Card (TRY)": meal_card,
+        })
+
+    oh_rows = []
+    total_oh = 0.0
+    for i in range(5):
+        row = md["oh"][i]
+        role = row["role"]
+        hc = float(row["hc"])
+        salary = float(row["salary"])
+
+        cost_per = calculate_agent_cost(salary) if hc > 0 else 0.0
+        total_cost = hc * cost_per
+        total_oh += total_cost
+
+        oh_rows.append({
+            "Month": month,
+            "Role": role,
+            "HC": hc,
+            "Base Salary (TRY)": salary,
+            "Cost/Head (TRY)": cost_per,
+            "Total Cost (TRY)": total_cost,
+            "Bonus %": bonus_pct,
+            "Bonus Multiplier": bonus_multiplier,
+            "Salary Multiplier": salary_multiplier,
+            "Meal Card (TRY)": meal_card,
+        })
+
+    grand_cost = total_prod_cost + total_oh
+    grand_margin = total_revenue - grand_cost
+    gm = (grand_margin / total_revenue) if total_revenue > 0 else 0.0
+
+    summary_df = pd.DataFrame([{
+        "Month": month,
+        "Total Production Cost (TRY)": total_prod_cost,
+        "Total Overhead Cost (TRY)": total_oh,
+        "Total Revenue (TRY)": total_revenue,
+        "Grand Total Cost (TRY)": grand_cost,
+        "Grand Margin (TRY)": grand_margin,
+        "GM %": gm
+    }])
+
+    return pd.DataFrame(prod_rows), pd.DataFrame(oh_rows), summary_df
+
+# ============================
+# Month-level overrides UI
+# ============================
+st.subheader("Calculated Values")
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Month", selected_month)
+c2.number_input(f"FX for {selected_month} (TRY/{currency})", min_value=0.0, step=0.1, key="w_fx_month")
+c3.number_input(f"Worked Hours for {selected_month}", min_value=0.0, step=1.0, key="w_wh_month")
+c4.slider(f"Shrinkage for {selected_month}", min_value=0.0, max_value=0.5, step=0.01, key="w_sh_month")
+c5.metric("Bonus Mult.", f"{bonus_multiplier:,.2f}")
+
+# Save widgets to store each run
+save_widgets_to_month(selected_month)
+
+# Compute
+prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
+s = summary_df_m.iloc[0]
+
+# ============================
+# Copy month helper
+# ============================
+st.divider()
+with st.expander("📌 Helper: Copy this month to next month", expanded=False):
+    idx = MONTHS.index(selected_month)
+    next_month = MONTHS[idx + 1] if idx < 11 else None
+    if next_month:
+        if st.button(f"Copy {selected_month} → {next_month}"):
+            st.session_state["data"]["months"][next_month] = {
+                "inputs": dict(get_month_data(selected_month)["inputs"]),
+                "prod": [dict(x) for x in get_month_data(selected_month)["prod"]],
+                "oh": [dict(x) for x in get_month_data(selected_month)["oh"]],
+            }
+            st.session_state["pending_reload_month"] = next_month
+            st.rerun()
+    else:
+        st.info("You're on Dec. No next month to copy into.")
+
+# ============================
+# Excel Template + Import
+# ============================
+st.sidebar.divider()
+st.sidebar.subheader("Excel Import / Template")
+
+def build_template_xlsx() -> bytes:
+    inputs_df = pd.DataFrame({
+        "Month": MONTHS,
+        "FX": [fx_default]*12,
+        "WorkedHours": [wh_default]*12,
+        "Shrinkage": [sh_default]*12,
+    })
+
+    prod_rows = []
+    for m in MONTHS:
+        for l in default_langs:
+            prod_rows.append({"Month": m, "Language": l, "HC": 0, "BaseSalaryTRY": 0, "UnitPriceCurrency": 0})
+    prod_df = pd.DataFrame(prod_rows)
+
+    oh_rows = []
+    for m in MONTHS:
+        for r in default_roles:
+            oh_rows.append({"Month": m, "Role": r, "HC": 0, "BaseSalaryTRY": 0})
+    oh_df = pd.DataFrame(oh_rows)
+
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as w:
+        inputs_df.to_excel(w, sheet_name="Inputs", index=False)
+        prod_df.to_excel(w, sheet_name="Production", index=False)
+        oh_df.to_excel(w, sheet_name="Overhead", index=False)
+    return out.getvalue()
+
+st.sidebar.download_button(
+    "⬇️ Download Excel Template",
+    data=build_template_xlsx(),
+    file_name="budget_template.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+st.divider()
+st.subheader("Import from Excel")
+uploaded = st.file_uploader("Upload filled template (.xlsx)", type=["xlsx"])
+
+def apply_import_xlsx(file):
+    xls = pd.ExcelFile(file)
+    required = {"Inputs", "Production", "Overhead"}
+    if not required.issubset(set(xls.sheet_names)):
+        missing = required - set(xls.sheet_names)
+        raise ValueError(f"Missing sheet(s): {', '.join(missing)}")
+
+    inputs_df = pd.read_excel(xls, "Inputs")
+    prod_df = pd.read_excel(xls, "Production")
+    oh_df = pd.read_excel(xls, "Overhead")
+
+    # month overrides
+    for _, row in inputs_df.iterrows():
+        m = normalize_month(row.get("Month"))
+        if not m:
+            continue
+        md = get_month_data(m)
+
+        fx = row.get("FX")
+        if pd.notna(fx):
+            md["inputs"]["fx"] = float(fx)
+
+        wh = row.get("WorkedHours")
+        if pd.notna(wh):
+            md["inputs"]["worked_hours"] = float(wh)
+
+        sh = row.get("Shrinkage")
+        if pd.notna(sh):
+            shv = float(sh)
+            if shv > 1:
+                shv = shv / 100.0  # fix 15 -> 0.15
+            md["inputs"]["shrinkage"] = shv
+
+    # production
+    lang_to_idx = {x.upper(): i for i, x in enumerate(default_langs)}
+    for _, row in prod_df.iterrows():
+        m = normalize_month(row.get("Month"))
+        if not m:
+            continue
+        lang = str(row.get("Language", "")).strip().upper()
+        if lang not in lang_to_idx:
+            continue
+        i = lang_to_idx[lang]
+        md = get_month_data(m)
+
+        if pd.notna(row.get("HC")):
+            md["prod"][i]["hc"] = float(row.get("HC"))
+        if pd.notna(row.get("BaseSalaryTRY")):
+            md["prod"][i]["salary"] = float(row.get("BaseSalaryTRY"))
+        if pd.notna(row.get("UnitPriceCurrency")):
+            md["prod"][i]["up"] = float(row.get("UnitPriceCurrency"))
+
+        md["prod"][i]["lang"] = default_langs[i]  # keep canonical
+
+    # overhead
+    role_to_idx = {x.strip().lower(): i for i, x in enumerate(default_roles)}
+    for _, row in oh_df.iterrows():
+        m = normalize_month(row.get("Month"))
+        if not m:
+            continue
+        role = str(row.get("Role", "")).strip().lower()
+        if role not in role_to_idx:
+            continue
+        i = role_to_idx[role]
+        md = get_month_data(m)
+
+        if pd.notna(row.get("HC")):
+            md["oh"][i]["hc"] = float(row.get("HC"))
+        if pd.notna(row.get("BaseSalaryTRY")):
+            md["oh"][i]["salary"] = float(row.get("BaseSalaryTRY"))
+        md["oh"][i]["role"] = default_roles[i]  # keep canonical
+
+    # Trigger safe reload
+    st.session_state["pending_reload_month"] = selected_month
+
+if uploaded is not None:
+    colA, colB = st.columns([1, 2])
+    with colA:
+        if st.button("✅ Apply import"):
+            try:
+                apply_import_xlsx(uploaded)
+                st.success("Import applied. Reloading…")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Import failed: {e}")
+    with colB:
+        st.info("Tip: Month can be Jan/January/1..12 or an Excel date.")
+
+# ============================
+# Production Blocks UI
+# ============================
+st.divider()
+st.subheader("Production Blocks")
+
+for i in range(6):
+    with st.expander(f"#{i+1} Production — {default_langs[i]}  ({selected_month})", expanded=(i == 0)):
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.text_input(f"Language Label #{i+1}", key=f"w_lang_{i}")
+        with col2:
+            st.number_input("HC", min_value=0.0, step=1.0, key=f"w_hc_{i}")
+        with col3:
+            st.number_input("Base Salary (TRY)", min_value=0.0, step=500.0, key=f"w_sal_{i}")
+        with col4:
+            st.number_input(f"Unit Price ({currency})", min_value=0.0, step=0.1, key=f"w_up_{i}")
+
+# ============================
+# Overhead UI
+# ============================
+st.divider()
+st.subheader("Overhead")
+
+for i in range(5):
+    with st.expander(f"Overhead #{i+1}  ({selected_month})", expanded=(i == 0)):
+        oh1, oh2, oh3 = st.columns(3)
+        with oh1:
+            st.text_input("Role", key=f"w_role_{i}")
+        with oh2:
+            st.number_input("OH HC", min_value=0.0, step=1.0, key=f"w_oh_hc_{i}")
+        with oh3:
+            st.number_input("Base Salary (TRY)", min_value=0.0, step=500.0, key=f"w_oh_sal_{i}")
+
+# Save edits and recompute
+save_widgets_to_month(selected_month)
+prod_df_m, oh_df_m, summary_df_m = compute_from_month_store(selected_month)
+s = summary_df_m.iloc[0]
+
+# ============================
+# Final Summary
+# ============================
+st.divider()
+st.subheader("Final Summary")
+
+# --- NEW: Selected Month Revenue (very clear) ---
+st.markdown("### 📌 Selected Month Revenue")
+fx_effective = get_month_data(selected_month)["inputs"]["fx"] if get_month_data(selected_month)["inputs"]["fx"] is not None else fx_default
+total_rev_try = float(s["Total Revenue (TRY)"])
+total_rev_cur = total_rev_try / float(fx_effective) if fx_effective > 0 else 0.0
+r1, r2, r3 = st.columns(3)
+r1.metric(f"Revenue ({selected_month}) — TRY", fmt0(total_rev_try))
+r2.metric(f"Revenue ({selected_month}) — {currency}", f"{total_rev_cur:,.0f}")
+r3.metric(f"FX used ({selected_month})", f"{fx_effective:,.2f} TRY/{currency}")
+
+# --- Original summary metrics ---
+s1, s2, s3, s4 = st.columns(4)
+s1.metric("Total Production Cost (TRY)", fmt0(s["Total Production Cost (TRY)"]))
+s2.metric("Total Overhead Cost (TRY)", fmt0(s["Total Overhead Cost (TRY)"]))
+s3.metric("Total Revenue (TRY)", fmt0(s["Total Revenue (TRY)"]))
+s4.metric("GM %", f"{s['GM %']*100:.1f}%")
+
+t1, t2, t3 = st.columns(3)
+t1.metric("Grand Total Cost (TRY)", fmt0(s["Grand Total Cost (TRY)"]))
+t2.metric("Grand Margin (TRY)", fmt0(s["Grand Margin (TRY)"]))
+t3.metric("Currency + FX", f"{currency} @ {fx_effective:,.2f} TRY")
+
+# --- NEW: Revenue breakdown by language ---
+st.markdown("### Revenue breakdown by language (Selected Month)")
+rev_by_lang = (
+    prod_df_m.groupby("Language", as_index=False)[["Revenue (TRY)", "Total Cost (TRY)", "Margin (TRY)"]]
+    .sum()
+    .sort_values("Revenue (TRY)", ascending=False)
+)
+st.dataframe(rev_by_lang, use_container_width=True)
+
+# ============================
+# Charts
+# ============================
+st.divider()
+st.subheader("Summary Graphics")
+
+summary_bar = pd.DataFrame(
+    {"TRY": [s["Total Revenue (TRY)"], s["Grand Total Cost (TRY)"], s["Grand Margin (TRY)"]]},
+    index=["Revenue", "Total Cost", "Margin"]
+)
+st.bar_chart(summary_bar)
+
+gm_df = pd.DataFrame({"GM%": [s["GM %"] * 100.0]}, index=["GM %"])
+st.bar_chart(gm_df)
+
+if view_mode == "All Months (Trend)":
+    all_sum = []
+    for m in MONTHS:
+        _, _, sm = compute_from_month_store(m)
+        all_sum.append(sm)
+    all_sum_df = pd.concat(all_sum, ignore_index=True)
+
+    st.markdown("#### All Months Trend")
+    trend_df = all_sum_df.set_index("Month")[["Total Revenue (TRY)", "Grand Total Cost (TRY)", "Grand Margin (TRY)"]]
+    st.line_chart(trend_df)
+
+    gm_trend = (all_sum_df.set_index("Month")[["GM %"]] * 100.0).rename(columns={"GM %": "GM%"})
+    st.line_chart(gm_trend)
+
+# ============================
+# Tables
+# ============================
+with st.expander("Show detailed tables (Selected Month)"):
+    st.markdown("#### Production")
+    st.dataframe(prod_df_m, use_container_width=True)
+    st.markdown("#### Overhead")
+    st.dataframe(oh_df_m, use_container_width=True)
+
+# ============================
+# Export
+# ============================
+st.divider()
+st.subheader("Export")
+
+def build_excel_export() -> bytes:
+    inputs_df = pd.DataFrame([{
+        "Selected Month": selected_month,
+        "Worked Hours (default)": wh_default,
+        "Shrinkage (default)": sh_default,
+        "Salary Multiplier": salary_multiplier,
+        "Bonus %": bonus_pct,
+        "Bonus Multiplier": bonus_multiplier,
+        "Meal Card (TRY)": meal_card,
+        "Currency": currency,
+        "FX (default)": fx_default,
+    }])
+
+    all_sum = []
+    for m in MONTHS:
+        _, _, sm = compute_from_month_store(m)
+        all_sum.append(sm)
+    all_months_summary_df = pd.concat(all_sum, ignore_index=True)
+
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        inputs_df.to_excel(writer, sheet_name="Inputs", index=False)
+        prod_df_m.to_excel(writer, sheet_name=f"Prod_{selected_month}", index=False)
+        oh_df_m.to_excel(writer, sheet_name=f"OH_{selected_month}", index=False)
+        summary_df_m.to_excel(writer, sheet_name=f"Summary_{selected_month}", index=False)
+        all_months_summary_df.to_excel(writer, sheet_name="Summary_AllMonths", index=False)
+
+    return out.getvalue()
+
+excel_bytes = build_excel_export()
+
+st.download_button(
+    label="⬇️ Download Excel (.xlsx)",
+    data=excel_bytes,
+    file_name=f"budget_app_export_{selected_month}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+
+with st.expander("Show formula details"):
+    st.write(
+        """
+**Cost per head (TRY)** =
+(base_salary + base_salary×bonus_pct×bonus_multiplier) × salary_multiplier + meal_card
+
+**Revenue (TRY)** =
+HC × productive_hours × (unit_price_in_currency × FX)
+
+**GM%** =
+(Revenue − Total Cost) / Revenue
+        """
+    )# =====================================================
+# Month-over-Month Analysis (SAFE – READ ONLY)
+# =====================================================
+st.divider()
+st.subheader("📊 Month-over-Month Analysis")
+
+# Select comparison month (read-only)
+idx = MONTHS.index(selected_month)
+default_prev = MONTHS[idx - 1] if idx > 0 else MONTHS[0]
+
+compare_month = st.selectbox(
+    "Compare with month",
+    MONTHS,
+    index=MONTHS.index(default_prev),
+    key="mom_compare_month_readonly"
+)
+
+# PURE READ — no writes
+cur_sum = compute_from_month_store(selected_month)[2].iloc[0]
+prev_sum = compute_from_month_store(compare_month)[2].iloc[0]
+
+rev_delta = cur_sum["Total Revenue (TRY)"] - prev_sum["Total Revenue (TRY)"]
+cost_delta = cur_sum["Grand Total Cost (TRY)"] - prev_sum["Grand Total Cost (TRY)"]
+margin_delta = cur_sum["Grand Margin (TRY)"] - prev_sum["Grand Margin (TRY)"]
+gm_delta_pp = (cur_sum["GM %"] - prev_sum["GM %"]) * 100
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Revenue Δ (TRY)", fmt0(rev_delta))
+c2.metric("Cost Δ (TRY)", fmt0(cost_delta))
+c3.metric("Margin Δ (TRY)", fmt0(margin_delta))
+c4.metric("GM Δ (pp)", f"{gm_delta_pp:+.2f}")
+
+bridge_df = pd.DataFrame([
+    {"Driver": "Revenue change", "Impact (TRY)": rev_delta},
+    {"Driver": "Cost change", "Impact (TRY)": -cost_delta},
+    {"Driver": "Net Margin impact", "Impact (TRY)": margin_delta},
+])
+
+st.markdown("### Margin Bridge")
+st.dataframe(bridge_df, use_container_width=True)
+
