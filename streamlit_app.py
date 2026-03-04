@@ -299,8 +299,9 @@ k1.metric("Revenue (EUR)", fmt_eur(t["rev"]),
           delta=fmt_try(t["rev_try"]) + " TRY", delta_color="off")
 k2.metric("Cost (EUR)", fmt_eur(t["cost"]),
           delta=fmt_try(t["cost_try"]) + " TRY", delta_color="off")
-k3.metric("Gross Margin (EUR)", fmt_eur(t["margin"]),
-          delta=f'{fmt_try(t["margin_try"])} TRY  |  {fmt_pct(t["margin"]/t["rev"]) if t["rev"] else "0%"}',
+gm_pct = fmt_pct(t["margin"]/t["rev"]) if t["rev"] else "0%"
+k3.metric(f"Gross Margin (EUR)  {gm_pct}", fmt_eur(t["margin"]),
+          delta=f'{fmt_try(t["margin_try"])} TRY  |  {gm_pct}',
           delta_color="normal")
 k4.metric("Total HC",      f"{int(t['hc'])} agents")
 k5.metric("Effective Hrs", f"{t['hrs']:,.0f} hrs")
