@@ -44,19 +44,19 @@ if "blocks" not in st.session_state:
 if "active_month" not in st.session_state:
     st.session_state.active_month = "Jan"
 if "attrition_rate" not in st.session_state:
-    st.session_state.attrition_rate = 0.05  # 5% default
-
-@st.cache_data(ttl=300)  # cache 5 minutes
-def fetch_live_fx():
-    """Fetch live EUR/TRY rate from open.er-api.com (free, no key needed)."""
-    try:
-        url = "https://open.er-api.com/v6/latest/EUR"
-        with urllib.request.urlopen(url, timeout=5) as r:
-            data = json.loads(r.read())
-        rate = data["rates"]["TRY"]
-        return round(rate, 2), True
-    except Exception:
-        return 38.0, False  # fallback
+    st.session_state.attrition_rate = 0.05
+if "backfill_efficiency" not in st.session_state:
+    st.session_state.backfill_efficiency = 0.50
+# Overhead roles: TM, QM, OM — stored per month
+if "overhead" not in st.session_state:
+    st.session_state.overhead = {
+        m: {
+            "TM": {"ratio": 10, "hc_override": None, "salary": 55000},
+            "QM": {"ratio": 20, "hc_override": None, "salary": 60000},
+            "OM": {"ratio": 50, "hc_override": None, "salary": 80000},
+        }
+        for m in MONTHS
+    }
 
 @st.cache_data(ttl=300)
 def fetch_live_fx():
@@ -74,8 +74,7 @@ def fmt_pct(v): return f"{v*100:.1f}%"
 
 def get_totals(month, g):
     total_rev_eur = total_cost_eur = total_cost_try = total_rev_try = total_hc = total_hrs = 0.0
-    # avg salary & fx across blocks (weighted by HC) for backfill cost
-    weighted_sal = weighted_fx = 0.0
+    weighted_sal = weighted_fx = weighted_hrs = 0.0
     for b in st.session_state.blocks.get(month, []):
         raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
         shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
@@ -92,34 +91,90 @@ def get_totals(month, g):
         total_hc += hc; total_hrs += hc * eff
         weighted_sal += hc * sal
         weighted_fx  += hc * fx
+        weighted_hrs += hc * eff
 
-    # Attrition & backfill
-    attrition_hc   = math.ceil(total_hc * st.session_state.attrition_rate)
-    net_hc         = total_hc - attrition_hc
-    backfill_hc    = attrition_hc  # 1-for-1 replacement
+    # Per-block or global attrition rate
+    att_rate   = st.session_state.attrition_rate
+    bf_eff     = st.session_state.backfill_efficiency  # e.g. 0.50 = 50% productive
 
-    # Backfill cost: use weighted-avg salary & fx; no revenue
+    # Exact fractional attrition & backfill
+    attrition_hc = total_hc * att_rate          # e.g. 8 × 5% = 0.4
+    backfill_hc  = attrition_hc                  # 1-for-1 replacement
+    net_hc       = total_hc - attrition_hc
+
+    # Weighted averages for backfill costing
     avg_sal = (weighted_sal / total_hc) if total_hc else 0
     avg_fx  = (weighted_fx  / total_hc) if total_hc else g["fx"]
-    backfill_cost_try = backfill_hc * avg_sal * g["ctc"] * (1 + g["bonus_pct"]) + backfill_hc * g["meal"]
-    backfill_cost_eur = backfill_cost_try / avg_fx if avg_fx else 0
+    avg_eff = (weighted_hrs / total_hc) if total_hc else g["hours"] * (1 - g["shrink"])
+
+    # Backfill cost: full salary (they're employed), partial hours due to training efficiency
+    backfill_cost_try  = backfill_hc * avg_sal * g["ctc"] * (1 + g["bonus_pct"]) + backfill_hc * g["meal"]
+    backfill_cost_eur  = backfill_cost_try / avg_fx if avg_fx else 0
+    # Hours: backfill agents work but at reduced efficiency — counted in produced, not billed
+    backfill_hrs       = backfill_hc * avg_eff * bf_eff
 
     total_cost_try_incl = total_cost_try + backfill_cost_try
     total_cost_eur_incl = total_cost_eur + backfill_cost_eur
+    total_hrs_incl      = total_hrs + backfill_hrs
+
+    # Overhead roles (TM/QM/OM) — pure cost, no hours, no revenue
+    oh = calc_overhead(month, total_hc, g)
+    oh_cost_eur = oh["total_cost_eur"]
+    oh_cost_try = oh["total_cost_try"]
+
+    grand_cost_eur = total_cost_eur_incl + oh_cost_eur
+    grand_cost_try = total_cost_try_incl + oh_cost_try
+
+    # Break-even: must cover all costs (prod + backfill + overhead) per billable hr
+    breakeven_up = (grand_cost_eur / total_hrs) if total_hrs > 0 else 0
 
     return dict(
         rev=total_rev_eur,              rev_try=total_rev_try,
-        cost=total_cost_eur_incl,       cost_try=total_cost_try_incl,
+        cost=grand_cost_eur,            cost_try=grand_cost_try,
         cost_excl_backfill=total_cost_eur,
         backfill_cost_eur=backfill_cost_eur,
         backfill_cost_try=backfill_cost_try,
-        margin=total_rev_eur - total_cost_eur_incl,
-        margin_try=total_rev_try - total_cost_try_incl,
-        hc=total_hc, hrs=total_hrs,
+        oh_cost_eur=oh_cost_eur,        oh_cost_try=oh_cost_try,
+        oh=oh,
+        margin=total_rev_eur - grand_cost_eur,
+        margin_try=total_rev_try - grand_cost_try,
+        hc=total_hc,
+        hrs=total_hrs_incl,
+        hrs_billable=total_hrs,
+        backfill_hrs=backfill_hrs,
         attrition_hc=attrition_hc,
         backfill_hc=backfill_hc,
         net_hc=net_hc,
+        breakeven_up=breakeven_up,
     )
+
+def calc_overhead(month, prod_hc, g):
+    """Calculate overhead cost for TM/QM/OM roles for a given month."""
+    oh     = st.session_state.overhead.get(month, {})
+    result = {}
+    total_cost_try = total_cost_eur = 0.0
+    for role, defaults in [("TM",{"ratio":10,"salary":55000}),
+                            ("QM",{"ratio":20,"salary":60000}),
+                            ("OM",{"ratio":50,"salary":80000})]:
+        cfg      = oh.get(role, defaults)
+        ratio    = cfg.get("ratio", defaults["ratio"])
+        sal      = cfg.get("salary", defaults["salary"])
+        override = cfg.get("hc_override")
+        # HC: manual override wins, else ratio-based (at least 1 if prod_hc > 0)
+        if override is not None:
+            hc = override
+        else:
+            hc = prod_hc / ratio if ratio > 0 else 0  # exact fractional
+        cost_try = hc * sal * g["ctc"] * (1 + g["bonus_pct"]) + hc * g["meal"]
+        cost_eur = cost_try / g["fx"] if g["fx"] else 0
+        result[role] = dict(hc=hc, salary=sal, ratio=ratio,
+                            cost_try=cost_try, cost_eur=cost_eur,
+                            manual=override is not None)
+        total_cost_try += cost_try
+        total_cost_eur += cost_eur
+    result["total_cost_try"] = total_cost_try
+    result["total_cost_eur"] = total_cost_eur
+    return result
 
 # openpyxl helpers
 def bdr():
@@ -188,7 +243,7 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
         for b in rows:
             hc_val   = b.get("hc", 0)
             att_rate = st.session_state.attrition_rate
-            bf_hc    = math.ceil(hc_val * att_rate)
+            bf_hc    = hc_val * att_rate  # exact fraction
             vals = [m, b.get("lang",""), hc_val, b.get("salary",0), b.get("unit_price",0),
                     b["shrink_override"] if b.get("shrink_override") is not None else "",
                     b["fx_override"]     if b.get("fx_override")     is not None else "",
@@ -286,10 +341,13 @@ with st.sidebar:
     g_meal      = st.number_input("Meal Card / Agent / Month (TRY)", value=5850, step=50, min_value=0)
 
     st.divider()
-    st.markdown('<div class="section-title">Attrition</div>', unsafe_allow_html=True)
-    attrition_pct = st.slider("Monthly Attrition Target %", 0.0, 0.30, 0.05, 0.01, format="%.0f%%",
-                               help="Expected % of HC lost per month. Shown as a warning if exceeded.")
-    st.session_state.attrition_rate = attrition_pct
+    st.markdown('<div class="section-title">Attrition & Backfill</div>', unsafe_allow_html=True)
+    attrition_pct = st.slider("Monthly Attrition %", 0.0, 0.30, 0.05, 0.005, format="%.1f%%",
+                               help="Fraction of HC lost per month. Backfill hired 1-for-1.")
+    bf_efficiency = st.slider("Backfill Training Efficiency %", 0.0, 1.0, 0.50, 0.05, format="%.0f%%",
+                               help="How productive backfill agents are while in training. 50% = half speed. Hours are counted but generate no revenue.")
+    st.session_state.attrition_rate       = attrition_pct
+    st.session_state.backfill_efficiency  = bf_efficiency
 
     g = dict(hours=g_hours, shrink=g_shrink, fx=g_fx,
              ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal)
@@ -389,7 +447,8 @@ k1,k2,k3,k4,k5 = st.columns(5)
 k1.metric("Revenue (EUR)", fmt_eur(t["rev"]),
           delta=fmt_try(t["rev_try"]) + " TRY", delta_color="off")
 k2.metric("Cost (EUR)", fmt_eur(t["cost"]),
-          delta=fmt_try(t["cost_try"]) + " TRY", delta_color="off")
+          delta=f'{fmt_try(t["cost_try"])} TRY  |  OH: €{t["oh_cost_eur"]:,.0f}',
+          delta_color="off", help="Includes production, backfill & overhead (TM/QM/OM)")
 gm_pct = fmt_pct(t["margin"]/t["rev"]) if t["rev"] else "0%"
 k3.metric(f"Gross Margin (EUR)  {gm_pct}", fmt_eur(t["margin"]),
           delta=f'{fmt_try(t["margin_try"])} TRY  |  {gm_pct}',
@@ -402,7 +461,29 @@ k4.metric("Total HC",
           delta=f"-{attr_hc} attrition ({attr_pct})",
           delta_color="inverse",
           help=f"Net HC after {attr_pct} attrition: {net_hc} agents")
-k5.metric("Effective Hrs", f"{t['hrs']:,.0f} hrs")
+k5.metric("Produced Hrs",
+          f"{t['hrs']:,.0f} hrs",
+          delta=f"Billable: {t['hrs_billable']:,.0f}  |  Backfill: {t['backfill_hrs']:,.0f}",
+          delta_color="off",
+          help="Total hours worked incl. backfill trainees. Only billable hours generate revenue.")
+
+# Break-even banner
+if t["hc"] > 0:
+    be   = t["breakeven_up"]
+    avg_up = t["rev"] / t["hrs_billable"] if t["hrs_billable"] else 0
+    be_gap = avg_up - be
+    be_color = "#10b981" if be_gap >= 0 else "#ef4444"
+    be_icon  = "✅" if be_gap >= 0 else "⚠️"
+    st.markdown(
+        f"<div style='background:#12192a;border:1px solid #2a3347;border-radius:6px;"
+        f"padding:8px 18px;margin-top:-8px;margin-bottom:4px;"
+        f"display:flex;justify-content:space-between;align-items:center;font-size:13px'>"
+        f"<span style='color:#5a6480'>Break-even Unit Price</span>"
+        f"<span style='color:{be_color};font-weight:700'>{be_icon} €{be:.2f}/hr break-even"
+        f"&nbsp;·&nbsp;avg selling €{avg_up:.2f}/hr"
+        f"&nbsp;·&nbsp;gap <b>€{be_gap:+.2f}/hr</b></span>"
+        f"</div>", unsafe_allow_html=True
+    )
 
 # ── Attrition warning banner ─────────────────────────────────
 if t["hc"] > 0:
@@ -500,7 +581,7 @@ for i, b in enumerate(blocks):
         if r1c5.button("🗑 Remove", key=f"del_{active}_{i}", use_container_width=True):
             blocks_to_delete.append(i)
 
-        r2c1,r2c2,r2c3,r2c4,r2c5 = st.columns([2,2,2,2,2])
+        r2c1,r2c2,r2c3,r2c4,r2c5,r2c6 = st.columns([2,2,2,2,2,2])
         shr_raw = r2c1.text_input(f"Shrinkage Override (global: {g_shrink*100:.0f}%)",
                                    value="" if b.get("shrink_override") is None else str(b["shrink_override"]),
                                    key=f"shr_{active}_{i}", placeholder="blank = global")
@@ -510,16 +591,28 @@ for i, b in enumerate(blocks):
         hr_raw  = r2c3.text_input(f"Hours Override (global: {g_hours})",
                                    value="" if b.get("hours_override") is None else str(b["hours_override"]),
                                    key=f"hr_{active}_{i}", placeholder="blank = global")
+        att_raw = r2c4.text_input(f"Attrition Override (global: {attrition_pct*100:.1f}%)",
+                                   value="" if b.get("attrition_override") is None else str(b["attrition_override"]),
+                                   key=f"att_{active}_{i}", placeholder="blank = global",
+                                   help="Override attrition rate for this block only e.g. 0.08 for 8%")
         # ── Cost breakdown ────────────────────────────────────
         ctc_cost_try     = hc * salary * g_ctc * (1 + g_bonus_pct)
         meal_cost_try    = hc * g_meal
         # per-block backfill
-        b_hc             = math.ceil(hc * st.session_state.attrition_rate)
+        # Per-block attrition override or global
+        raw_att          = b.get("attrition_override")
+        blk_att          = raw_att if raw_att is not None else st.session_state.attrition_rate
+        blk_att          = max(0.0, min(1.0, blk_att if blk_att <= 1 else blk_att / 100))
+        b_hc             = hc * blk_att
         b_cost_try       = b_hc * salary * g_ctc * (1 + g_bonus_pct) + b_hc * g_meal
         b_cost_eur       = b_cost_try / fx if fx else 0
+        b_hrs            = b_hc * eff * st.session_state.backfill_efficiency
         total_cost_incl  = cost_try_total + b_cost_try
         margin_incl_eur  = rev_eur - (cost_e + b_cost_eur)
         margin_incl_try  = rev_try - total_cost_incl
+        # Break-even unit price for this block
+        total_billable_hrs = hc * eff
+        blk_breakeven    = (cost_e + b_cost_eur) / total_billable_hrs if total_billable_hrs else 0
 
         st.markdown("---")
         bd1, bd2, bd3, bd4, bd5, bd6 = st.columns(6)
@@ -539,7 +632,7 @@ for i, b in enumerate(blocks):
             st.markdown("**🔄 Backfill Cost**")
             st.markdown(f"<span style='color:#8b5cf6;font-size:15px;font-weight:600'>₺{b_cost_try:,.0f}</span>", unsafe_allow_html=True)
             st.markdown(f"<span style='color:#8b5cf6;font-size:13px'>{fmt_eur(b_cost_eur)}</span>", unsafe_allow_html=True)
-            st.caption(f"{b_hc} backfill HC (cost only)")
+            st.caption(f"{b_hc:.2f} HC · {b_hrs:.0f} hrs @ {st.session_state.backfill_efficiency*100:.0f}% efficiency · no revenue")
         with bd5:
             st.markdown("**💰 Total Cost**")
             st.markdown(f"<span style='color:#ef4444;font-size:15px;font-weight:600'>₺{total_cost_incl:,.0f}</span>", unsafe_allow_html=True)
@@ -550,6 +643,17 @@ for i, b in enumerate(blocks):
             st.markdown(f"<span style='color:#10b981;font-size:15px;font-weight:600'>₺{rev_try:,.0f}</span>", unsafe_allow_html=True)
             st.markdown(f"<span style='color:#10b981;font-size:13px'>{fmt_eur(rev_eur)}</span>", unsafe_allow_html=True)
             st.caption(f"{hc} HC × {eff:.1f}h × €{up}/hr")
+        # Break-even insight
+        be_color = "#10b981" if up >= blk_breakeven else "#ef4444"
+        be_label = "✅ Above break-even" if up >= blk_breakeven else "⚠️ Below break-even"
+        st.markdown(
+            f"<div style='background:#12192a;border:1px solid #2a3347;border-radius:5px;"
+            f"padding:6px 14px;margin-top:6px;font-size:12px;color:#8b96b0'>"
+            f"Break-even price: <b style='color:{be_color}'>€{blk_breakeven:.2f}/hr</b>"
+            f"&nbsp;&nbsp;·&nbsp;&nbsp;Current: <b style='color:{be_color}'>€{up:.2f}/hr</b>"
+            f"&nbsp;&nbsp;·&nbsp;&nbsp;<span style='color:{be_color}'>{be_label}</span>"
+            f"</div>", unsafe_allow_html=True
+        )
 
         margin_color = "#10b981" if margin_incl_eur >= 0 else "#ef4444"
         st.markdown(
@@ -566,15 +670,86 @@ for i, b in enumerate(blocks):
 
         blocks[i].update({
             "lang": new_lang, "hc": new_hc, "salary": new_sal, "unit_price": new_up,
-            "shrink_override": float(shr_raw) if shr_raw.strip() else None,
-            "fx_override":     float(fx_raw)  if fx_raw.strip()  else None,
-            "hours_override":  float(hr_raw)  if hr_raw.strip()  else None,
+            "shrink_override":    float(shr_raw) if shr_raw.strip() else None,
+            "fx_override":        float(fx_raw)  if fx_raw.strip()  else None,
+            "hours_override":     float(hr_raw)  if hr_raw.strip()  else None,
+            "attrition_override": float(att_raw) if att_raw.strip() else None,
         })
 
 if blocks_to_delete:
     for idx in sorted(blocks_to_delete, reverse=True):
         blocks.pop(idx)
     st.rerun()
+
+# ── Overhead Roles ───────────────────────────────────────────
+st.divider()
+st.markdown("### 🏢 Overhead Roles")
+st.caption("TM / QM / OM — cost only, not billable. HC auto-calculated from production HC via span-of-control ratio, or set manually.")
+
+oh_data   = st.session_state.overhead[active]
+prod_hc_now = t["hc"]  # current month production HC for ratio display
+
+oh_cols = st.columns(3)
+ROLE_META = {
+    "TM": {"icon":"👥", "label":"Team Manager",       "default_ratio":10, "default_sal":55000},
+    "QM": {"icon":"🎯", "label":"Quality Manager",    "default_ratio":20, "default_sal":60000},
+    "OM": {"icon":"⚙️", "label":"Operations Manager", "default_ratio":50, "default_sal":80000},
+}
+
+for col, (role, meta) in zip(oh_cols, ROLE_META.items()):
+    cfg = oh_data.setdefault(role, {
+        "ratio": meta["default_ratio"],
+        "hc_override": None,
+        "salary": meta["default_sal"],
+    })
+    with col:
+        st.markdown(f"**{meta['icon']} {role} — {meta['label']}**")
+        new_sal   = st.number_input(f"Base Salary TRY/mo ({role})",
+                                     value=float(cfg.get("salary", meta["default_sal"])),
+                                     step=1000.0, min_value=0.0, key=f"oh_sal_{active}_{role}")
+        new_ratio = st.number_input(f"Span of Control (1 {role} per N agents)",
+                                     value=int(cfg.get("ratio", meta["default_ratio"])),
+                                     step=1, min_value=1, key=f"oh_ratio_{active}_{role}",
+                                     help=f"Auto HC = {prod_hc_now} ÷ {cfg.get('ratio', meta['default_ratio'])} = {prod_hc_now / cfg.get('ratio', meta['default_ratio']):.2f}")
+        override_raw = st.text_input(f"HC Override (blank = auto)",
+                                      value="" if cfg.get("hc_override") is None else str(cfg["hc_override"]),
+                                      key=f"oh_hc_{active}_{role}",
+                                      placeholder=f"auto: {prod_hc_now / new_ratio:.2f}")
+        # Calc display
+        hc_val    = float(override_raw) if override_raw.strip() else prod_hc_now / new_ratio
+        cost_try  = hc_val * new_sal * g_ctc * (1 + g_bonus_pct) + hc_val * g_meal
+        cost_eur  = cost_try / g_fx if g_fx else 0
+        st.markdown(
+            f"<div style='background:#1e2535;border:1px solid #2a3347;border-radius:5px;"
+            f"padding:8px 12px;margin-top:4px;font-size:12px'>"
+            f"<span style='color:#8b96b0'>HC: </span><b style='color:#e8edf5'>{hc_val:.2f}</b>"
+            f"&nbsp;·&nbsp;<span style='color:#8b96b0'>Cost: </span>"
+            f"<b style='color:#ef4444'>₺{cost_try:,.0f}</b>"
+            f"&nbsp;/&nbsp;<b style='color:#ef4444'>€{cost_eur:,.0f}</b>"
+            f"</div>", unsafe_allow_html=True
+        )
+        # Save state
+        oh_data[role]["salary"]      = new_sal
+        oh_data[role]["ratio"]       = new_ratio
+        oh_data[role]["hc_override"] = float(override_raw) if override_raw.strip() else None
+
+# Overhead summary bar
+oh_now = calc_overhead(active, prod_hc_now, g)
+oh_total_try = oh_now["total_cost_try"]
+oh_total_eur = oh_now["total_cost_eur"]
+oh_hc_total  = sum(oh_now[r]["hc"] for r in ROLE_META)
+st.markdown(
+    f"<div style='background:#1e2535;border:1px solid #8b5cf6;border-radius:6px;"
+    f"padding:10px 18px;margin-top:8px;display:flex;justify-content:space-between;align-items:center'>"
+    f"<span style='color:#8b5cf6;font-weight:600'>🏢 Total Overhead Cost — {active}</span>"
+    f"<span style='color:#e8edf5'>"
+    f"TM: <b>{oh_now['TM']['hc']:.2f} HC</b> &nbsp;|&nbsp; "
+    f"QM: <b>{oh_now['QM']['hc']:.2f} HC</b> &nbsp;|&nbsp; "
+    f"OM: <b>{oh_now['OM']['hc']:.2f} HC</b> &nbsp;|&nbsp; "
+    f"Total: <b style='color:#ef4444'>₺{oh_total_try:,.0f}</b> / "
+    f"<b style='color:#ef4444'>€{oh_total_eur:,.0f}</b>"
+    f"</span></div>", unsafe_allow_html=True
+)
 
 st.divider()
 st.markdown("### 📉 P&L Summary — Full Year")
@@ -598,7 +773,7 @@ for m in MONTHS:
         fmt_eur(mt["cost"]),
         fmt_eur(mt["margin"]),
         fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—",
-        int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["backfill_hc"]), int(mt["net_hc"]),
+        int(mt["hc"]), f'-{mt["attrition_hc"]:.2f}', f'{mt["backfill_hc"]:.2f}', f'{mt["net_hc"]:.2f}',
     ]
     pnl_try[m] = [
         fmt_try(mt["rev_try"]),
@@ -607,18 +782,29 @@ for m in MONTHS:
         fmt_try(mt["cost_try"]),
         fmt_try(mt["margin_try"]),
         fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—",
-        int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["backfill_hc"]), int(mt["net_hc"]),
+        int(mt["hc"]), f'-{mt["attrition_hc"]:.2f}', f'{mt["backfill_hc"]:.2f}', f'{mt["net_hc"]:.2f}',
     ]
 fy_prod_cost_try = fy["cost_try"] - sum(month_data[m]["backfill_cost_try"] for m in MONTHS)
 fy_backfill_eur  = sum(month_data[m]["backfill_cost_eur"] for m in MONTHS)
 fy_backfill_try  = sum(month_data[m]["backfill_cost_try"] for m in MONTHS)
 fy_excl          = sum(month_data[m]["cost_excl_backfill"] for m in MONTHS)
+fy_hrs_bill  = sum(month_data[m]["hrs_billable"] for m in MONTHS)
+fy_hrs_bf    = sum(month_data[m]["backfill_hrs"] for m in MONTHS)
+fy_hrs_tot   = sum(month_data[m]["hrs"] for m in MONTHS)
+fy_be        = fy["cost"] / fy_hrs_bill if fy_hrs_bill else 0
+fy_avg_up    = fy["rev"]  / fy_hrs_bill if fy_hrs_bill else 0
 pnl_eur["Full Year"] = [fmt_eur(fy["rev"]), fmt_eur(fy_excl), fmt_eur(fy_backfill_eur),
                          fmt_eur(fy["cost"]), fmt_eur(fy["margin"]),
-                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—","","","",""]
+                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—",
+                         f'€{fy_be:.2f}', f'€{fy_avg_up:.2f}',
+                         "","","","",
+                         f'{fy_hrs_bill:,.0f}', f'{fy_hrs_bf:,.0f}', f'{fy_hrs_tot:,.0f}']
 pnl_try["Full Year"] = [fmt_try(fy["rev_try"]), fmt_try(fy_prod_cost_try), fmt_try(fy_backfill_try),
                          fmt_try(fy["cost_try"]), fmt_try(fy["margin_try"]),
-                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—","","","",""]
+                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—",
+                         f'€{fy_be:.2f}', f'€{fy_avg_up:.2f}',
+                         "","","","",
+                         f'{fy_hrs_bill:,.0f}', f'{fy_hrs_bf:,.0f}', f'{fy_hrs_tot:,.0f}']
 
 tab_eur, tab_try = st.tabs(["💶 EUR View", "₺ TRY View"])
 with tab_eur:
