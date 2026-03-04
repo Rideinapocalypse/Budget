@@ -73,6 +73,8 @@ def fmt_pct(v): return f"{v*100:.1f}%"
 
 def get_totals(month, g):
     total_rev_eur = total_cost_eur = total_cost_try = total_rev_try = total_hc = total_hrs = 0.0
+    # avg salary & fx across blocks (weighted by HC) for backfill cost
+    weighted_sal = weighted_fx = 0.0
     for b in st.session_state.blocks.get(month, []):
         raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
         shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
@@ -87,15 +89,35 @@ def get_totals(month, g):
         total_rev_eur  += rev_eur;  total_rev_try  += rev_try
         total_cost_eur += cost_eur; total_cost_try += cost_try
         total_hc += hc; total_hrs += hc * eff
-    attrition_hc = round(total_hc * st.session_state.attrition_rate)
+        weighted_sal += hc * sal
+        weighted_fx  += hc * fx
+
+    # Attrition & backfill
+    attrition_hc   = round(total_hc * st.session_state.attrition_rate)
+    net_hc         = total_hc - attrition_hc
+    backfill_hc    = attrition_hc  # 1-for-1 replacement
+
+    # Backfill cost: use weighted-avg salary & fx; no revenue
+    avg_sal = (weighted_sal / total_hc) if total_hc else 0
+    avg_fx  = (weighted_fx  / total_hc) if total_hc else g["fx"]
+    backfill_cost_try = backfill_hc * avg_sal * g["ctc"] * (1 + g["bonus_pct"]) + backfill_hc * g["meal"]
+    backfill_cost_eur = backfill_cost_try / avg_fx if avg_fx else 0
+
+    total_cost_try_incl = total_cost_try + backfill_cost_try
+    total_cost_eur_incl = total_cost_eur + backfill_cost_eur
+
     return dict(
-        rev=total_rev_eur,   rev_try=total_rev_try,
-        cost=total_cost_eur, cost_try=total_cost_try,
-        margin=total_rev_eur-total_cost_eur,
-        margin_try=total_rev_try-total_cost_try,
+        rev=total_rev_eur,              rev_try=total_rev_try,
+        cost=total_cost_eur_incl,       cost_try=total_cost_try_incl,
+        cost_excl_backfill=total_cost_eur,
+        backfill_cost_eur=backfill_cost_eur,
+        backfill_cost_try=backfill_cost_try,
+        margin=total_rev_eur - total_cost_eur_incl,
+        margin_try=total_rev_try - total_cost_try_incl,
         hc=total_hc, hrs=total_hrs,
         attrition_hc=attrition_hc,
-        net_hc=total_hc - attrition_hc,
+        backfill_hc=backfill_hc,
+        net_hc=net_hc,
     )
 
 # openpyxl helpers
@@ -136,12 +158,14 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
 
     # ── Single data sheet with all months ────────────────────
     ws = wb.create_sheet("Budget Data")
-    set_widths(ws, [10, 18, 10, 22, 22, 24, 18, 22])
+    set_widths(ws, [10, 18, 10, 22, 22, 22, 16, 18, 18, 14, 22])
 
     col_hdrs  = ["Month","Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
-                 "Shrinkage Override","FX Override","Hours Override","Attrition Target %"]
+                 "Shrinkage Override","FX Override","Hours Override",
+                 "Attrition Target %","Backfill HC","Backfill Salary (TRY)"]
     col_hints = ["Jan/Feb/etc","e.g. DE, EN, TR","agents","monthly gross TRY","billable EUR/hr",
-                 "blank=global","blank=global","blank=global","e.g. 0.05 = 5%"]
+                 "blank=global","blank=global","blank=global",
+                 "e.g. 0.05=5%","auto=HC×attrition%","blank=same as prod salary"]
 
     # Title
     ws["A1"].value = "CC Budget Tool - Data Template"
@@ -161,11 +185,14 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
         rows = existing or [{"lang":"","hc":0,"salary":0,"unit_price":0,
                              "shrink_override":None,"fx_override":None,"hours_override":None}]
         for b in rows:
-            vals = [m, b.get("lang",""), b.get("hc",0), b.get("salary",0), b.get("unit_price",0),
+            hc_val   = b.get("hc", 0)
+            att_rate = st.session_state.attrition_rate
+            bf_hc    = round(hc_val * att_rate)
+            vals = [m, b.get("lang",""), hc_val, b.get("salary",0), b.get("unit_price",0),
                     b["shrink_override"] if b.get("shrink_override") is not None else "",
                     b["fx_override"]     if b.get("fx_override")     is not None else "",
                     b["hours_override"]  if b.get("hours_override")  is not None else "",
-                    st.session_state.attrition_rate]
+                    att_rate, bf_hc, b.get("salary",0)]
             for ci, v in enumerate(vals, 1): inp(ws, ri, ci, v)
             ri += 1
         # blank separator row between months
@@ -483,11 +510,18 @@ for i, b in enumerate(blocks):
                                    value="" if b.get("hours_override") is None else str(b["hours_override"]),
                                    key=f"hr_{active}_{i}", placeholder="blank = global")
         # ── Cost breakdown ────────────────────────────────────
-        ctc_cost_try   = hc * salary * g_ctc * (1 + g_bonus_pct)
-        meal_cost_try  = hc * g_meal
+        ctc_cost_try     = hc * salary * g_ctc * (1 + g_bonus_pct)
+        meal_cost_try    = hc * g_meal
+        # per-block backfill
+        b_hc             = round(hc * st.session_state.attrition_rate)
+        b_cost_try       = b_hc * salary * g_ctc * (1 + g_bonus_pct) + b_hc * g_meal
+        b_cost_eur       = b_cost_try / fx if fx else 0
+        total_cost_incl  = cost_try_total + b_cost_try
+        margin_incl_eur  = rev_eur - (cost_e + b_cost_eur)
+        margin_incl_try  = rev_try - total_cost_incl
 
         st.markdown("---")
-        bd1, bd2, bd3, bd4, bd5 = st.columns(5)
+        bd1, bd2, bd3, bd4, bd5, bd6 = st.columns(6)
         with bd1:
             st.markdown("**🕐 Eff. Hrs / Agent**")
             st.markdown(f"<span style='color:#8b96b0;font-size:15px;font-weight:600'>{eff:.1f} hrs</span>", unsafe_allow_html=True)
@@ -495,30 +529,36 @@ for i, b in enumerate(blocks):
         with bd2:
             st.markdown("**💸 Salary CTC**")
             st.markdown(f"<span style='color:#f59e0b;font-size:15px;font-weight:600'>₺{ctc_cost_try:,.0f}</span>", unsafe_allow_html=True)
-            st.caption(f"₺{salary:,.0f} × {g_ctc} CTC × (1+{g_bonus_pct*100:.0f}%)")
+            st.caption(f"₺{salary:,.0f} × {g_ctc} × (1+{g_bonus_pct*100:.0f}%)")
         with bd3:
             st.markdown("**🍽️ Meal Cards**")
             st.markdown(f"<span style='color:#f59e0b;font-size:15px;font-weight:600'>₺{meal_cost_try:,.0f}</span>", unsafe_allow_html=True)
             st.caption(f"{hc} HC × ₺{g_meal:,.0f}")
         with bd4:
-            st.markdown("**💰 Total Cost**")
-            st.markdown(f"<span style='color:#ef4444;font-size:15px;font-weight:600'>₺{cost_try_total:,.0f}</span>", unsafe_allow_html=True)
-            st.markdown(f"<span style='color:#ef4444;font-size:13px'>€{cost_e:,.0f}</span>", unsafe_allow_html=True)
-            st.caption(f"÷ {fx} FX rate")
+            st.markdown("**🔄 Backfill Cost**")
+            st.markdown(f"<span style='color:#8b5cf6;font-size:15px;font-weight:600'>₺{b_cost_try:,.0f}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:#8b5cf6;font-size:13px'>{fmt_eur(b_cost_eur)}</span>", unsafe_allow_html=True)
+            st.caption(f"{b_hc} backfill HC (cost only)")
         with bd5:
+            st.markdown("**💰 Total Cost**")
+            st.markdown(f"<span style='color:#ef4444;font-size:15px;font-weight:600'>₺{total_cost_incl:,.0f}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:#ef4444;font-size:13px'>{fmt_eur(cost_e + b_cost_eur)}</span>", unsafe_allow_html=True)
+            st.caption("incl. backfill")
+        with bd6:
             st.markdown("**📈 Revenue**")
             st.markdown(f"<span style='color:#10b981;font-size:15px;font-weight:600'>₺{rev_try:,.0f}</span>", unsafe_allow_html=True)
             st.markdown(f"<span style='color:#10b981;font-size:13px'>{fmt_eur(rev_eur)}</span>", unsafe_allow_html=True)
             st.caption(f"{hc} HC × {eff:.1f}h × €{up}/hr")
 
-        margin_color = "#10b981" if margin >= 0 else "#ef4444"
+        margin_color = "#10b981" if margin_incl_eur >= 0 else "#ef4444"
         st.markdown(
             f"<div style='background:#1e2535;border:1px solid #2a3347;border-radius:6px;"
             f"padding:10px 16px;margin-top:8px;display:flex;justify-content:space-between;align-items:center'>"
-            f"<span style='color:#8b96b0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em'>Gross Margin</span>"
-            f"<span style='color:{margin_color};font-size:20px;font-weight:700'>{fmt_eur(margin)}"
-            f"&nbsp;&nbsp;<span style='font-size:14px'>₺{margin_try:,.0f}</span>"
-            f"&nbsp;&nbsp;<span style='font-size:13px'>({fmt_pct(margin/rev_eur) if rev_eur else '—'})</span></span>"
+            f"<span style='color:#8b96b0;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em'>"
+            f"Gross Margin <span style='color:#8b5cf6;font-weight:400'>(incl. backfill)</span></span>"
+            f"<span style='color:{margin_color};font-size:20px;font-weight:700'>{fmt_eur(margin_incl_eur)}"
+            f"&nbsp;&nbsp;<span style='font-size:14px'>₺{margin_incl_try:,.0f}</span>"
+            f"&nbsp;&nbsp;<span style='font-size:13px'>({fmt_pct(margin_incl_eur/rev_eur) if rev_eur else '—'})</span></span>"
             f"</div>",
             unsafe_allow_html=True
         )
@@ -545,20 +585,39 @@ for m in MONTHS:
     month_data[m] = mt
     for k in fy: fy[k] += mt[k]
 
-pnl_eur = {"Line Item": ["Revenue (EUR)","Cost (EUR)","Gross Margin (EUR)","Margin %","HC","Attrition (-)",  "Net HC"]}
-pnl_try = {"Line Item": ["Revenue (TRY)","Cost (TRY)","Gross Margin (TRY)","Margin %","HC","Attrition (-)","Net HC"]}
+pnl_eur = {"Line Item": ["Revenue (EUR)","  Prod. Cost (EUR)","  Backfill Cost (EUR)","Total Cost (EUR)","Gross Margin (EUR)","Margin %","HC","Attrition (-)","Backfill HC","Net HC"]}
+pnl_try = {"Line Item": ["Revenue (TRY)","  Prod. Cost (TRY)","  Backfill Cost (TRY)","Total Cost (TRY)","Gross Margin (TRY)","Margin %","HC","Attrition (-)","Backfill HC","Net HC"]}
 for m in MONTHS:
     mt = month_data[m]
-    pnl_eur[m] = [fmt_eur(mt["rev"]), fmt_eur(mt["cost"]), fmt_eur(mt["margin"]),
-                  fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—",
-                  int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["net_hc"])]
-    pnl_try[m] = [fmt_try(mt["rev_try"]), fmt_try(mt["cost_try"]), fmt_try(mt["margin_try"]),
-                  fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—",
-                  int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["net_hc"])]
-pnl_eur["Full Year"] = [fmt_eur(fy["rev"]), fmt_eur(fy["cost"]), fmt_eur(fy["margin"]),
-                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—","","",""]
-pnl_try["Full Year"] = [fmt_try(fy["rev_try"]), fmt_try(fy["cost_try"]), fmt_try(fy["margin_try"]),
-                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—","","",""]
+    prod_cost_try = mt["cost_try"] - mt["backfill_cost_try"]
+    pnl_eur[m] = [
+        fmt_eur(mt["rev"]),
+        fmt_eur(mt["cost_excl_backfill"]),
+        fmt_eur(mt["backfill_cost_eur"]),
+        fmt_eur(mt["cost"]),
+        fmt_eur(mt["margin"]),
+        fmt_pct(mt["margin"]/mt["rev"]) if mt["rev"] else "—",
+        int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["backfill_hc"]), int(mt["net_hc"]),
+    ]
+    pnl_try[m] = [
+        fmt_try(mt["rev_try"]),
+        fmt_try(prod_cost_try),
+        fmt_try(mt["backfill_cost_try"]),
+        fmt_try(mt["cost_try"]),
+        fmt_try(mt["margin_try"]),
+        fmt_pct(mt["margin_try"]/mt["rev_try"]) if mt["rev_try"] else "—",
+        int(mt["hc"]), f'-{mt["attrition_hc"]}', int(mt["backfill_hc"]), int(mt["net_hc"]),
+    ]
+fy_prod_cost_try = fy["cost_try"] - sum(month_data[m]["backfill_cost_try"] for m in MONTHS)
+fy_backfill_eur  = sum(month_data[m]["backfill_cost_eur"] for m in MONTHS)
+fy_backfill_try  = sum(month_data[m]["backfill_cost_try"] for m in MONTHS)
+fy_excl          = sum(month_data[m]["cost_excl_backfill"] for m in MONTHS)
+pnl_eur["Full Year"] = [fmt_eur(fy["rev"]), fmt_eur(fy_excl), fmt_eur(fy_backfill_eur),
+                         fmt_eur(fy["cost"]), fmt_eur(fy["margin"]),
+                         fmt_pct(fy["margin"]/fy["rev"]) if fy["rev"] else "—","","","",""]
+pnl_try["Full Year"] = [fmt_try(fy["rev_try"]), fmt_try(fy_prod_cost_try), fmt_try(fy_backfill_try),
+                         fmt_try(fy["cost_try"]), fmt_try(fy["margin_try"]),
+                         fmt_pct(fy["margin_try"]/fy["rev_try"]) if fy["rev_try"] else "—","","","",""]
 
 tab_eur, tab_try = st.tabs(["💶 EUR View", "₺ TRY View"])
 with tab_eur:
