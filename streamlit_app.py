@@ -39,30 +39,41 @@ st.markdown("""
 
 MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
-if "blocks" not in st.session_state:
-    st.session_state.blocks = {m: [] for m in MONTHS}
+# ── Multi-client state ───────────────────────────────────────
+def _default_client(name="Client A"):
+    return dict(
+        name=name,
+        blocks={m: [] for m in MONTHS},
+        cola_configs={},
+        overhead_global={
+            "TM": {"ratio": 10, "hc_override": None, "salary": 55000},
+            "QM": {"ratio": 20, "hc_override": None, "salary": 60000},
+            "OM": {"ratio": 50, "hc_override": None, "salary": 80000},
+        },
+        overhead_monthly={m: None for m in MONTHS},
+        opex={"training_cost_per_hire": 5000},  # TRY per backfill hire
+    )
+
+if "clients" not in st.session_state:
+    st.session_state.clients = [_default_client("Client A")]
+if "active_client" not in st.session_state:
+    st.session_state.active_client = 0
 if "active_month" not in st.session_state:
     st.session_state.active_month = "Jan"
 if "attrition_rate" not in st.session_state:
     st.session_state.attrition_rate = 0.05
 if "backfill_efficiency" not in st.session_state:
     st.session_state.backfill_efficiency = 0.50
-# COLA: list of {block_key, cola_date (str YYYY-MM-DD), new_up (float)}
-if "cola_configs" not in st.session_state:
-    st.session_state.cola_configs = {}  # key: f"{month}_{block_idx}" -> {date, new_up}
-# Overhead roles: global config (applies all months unless per-month override set)
-if "overhead_global" not in st.session_state:
-    st.session_state.overhead_global = {
-        "TM": {"ratio": 10, "hc_override": None, "salary": 55000},
-        "QM": {"ratio": 20, "hc_override": None, "salary": 60000},
-        "OM": {"ratio": 50, "hc_override": None, "salary": 80000},
-    }
-if "overhead_monthly" not in st.session_state:
-    st.session_state.overhead_monthly = {m: None for m in MONTHS}
 
-def get_oh_cfg(month):
-    mo = st.session_state.overhead_monthly.get(month)
-    return mo if mo is not None else st.session_state.overhead_global
+def client():
+    """Return current active client dict."""
+    idx = st.session_state.active_client
+    return st.session_state.clients[idx]
+
+def get_oh_cfg(month, cl=None):
+    cl = cl or client()
+    mo = cl["overhead_monthly"].get(month)
+    return mo if mo is not None else cl["overhead_global"]
 
 @st.cache_data(ttl=300)
 def fetch_live_fx():
@@ -86,8 +97,8 @@ def effective_up(month, block_idx, base_up):
     COLA date is treated as a position within the fiscal year (Jan=1 … Dec=12).
     Year is taken from the date only to get days-in-month; comparisons use month number.
     """
-    key = str(block_idx)  # COLA config is per block globally, not per month
-    cfg = st.session_state.cola_configs.get(key)
+    key = str(block_idx)
+    cfg = client().get("cola_configs", {}).get(key)
     if not cfg or not cfg.get("date") or not cfg.get("new_up"):
         return base_up
     try:
@@ -112,7 +123,8 @@ def effective_up(month, block_idx, base_up):
 def get_totals(month, g):
     total_rev_eur = total_cost_eur = total_cost_try = total_rev_try = total_hc = total_hrs = 0.0
     weighted_sal = weighted_fx = weighted_hrs = 0.0
-    for blk_i, b in enumerate(st.session_state.blocks.get(month, [])):
+    cl = client()
+    for blk_i, b in enumerate(cl["blocks"].get(month, [])):
         raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
         shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
         fx     = b["fx_override"]     if b.get("fx_override")     is not None else g["fx"]
@@ -156,15 +168,19 @@ def get_totals(month, g):
     total_cost_eur_incl = total_cost_eur + backfill_cost_eur
     total_hrs_incl      = total_hrs + backfill_hrs
 
+    # OPEX: Training cost (one-time per backfill hire, in TRY)
+    training_cost_try  = backfill_hc * cl.get("opex", {}).get("training_cost_per_hire", 0)
+    training_cost_eur  = training_cost_try / avg_fx if avg_fx else 0
+
     # Overhead roles (TM/QM/OM) — pure cost, no hours, no revenue
-    oh = calc_overhead(month, total_hc, g)
+    oh = calc_overhead(month, total_hc, g, cl)
     oh_cost_eur = oh["total_cost_eur"]
     oh_cost_try = oh["total_cost_try"]
 
-    grand_cost_eur = total_cost_eur_incl + oh_cost_eur
-    grand_cost_try = total_cost_try_incl + oh_cost_try
+    grand_cost_eur = total_cost_eur_incl + oh_cost_eur + training_cost_eur
+    grand_cost_try = total_cost_try_incl + oh_cost_try + training_cost_try
 
-    # Break-even: must cover all costs (prod + backfill + overhead) per billable hr
+    # Break-even: must cover all costs (prod + backfill + overhead + opex) per billable hr
     breakeven_up = (grand_cost_eur / total_hrs) if total_hrs > 0 else 0
 
     return dict(
@@ -173,6 +189,8 @@ def get_totals(month, g):
         cost_excl_backfill=total_cost_eur,
         backfill_cost_eur=backfill_cost_eur,
         backfill_cost_try=backfill_cost_try,
+        training_cost_eur=training_cost_eur,
+        training_cost_try=training_cost_try,
         oh_cost_eur=oh_cost_eur,        oh_cost_try=oh_cost_try,
         oh=oh,
         margin=total_rev_eur - grand_cost_eur,
@@ -187,9 +205,9 @@ def get_totals(month, g):
         breakeven_up=breakeven_up,
     )
 
-def calc_overhead(month, prod_hc, g):
+def calc_overhead(month, prod_hc, g, cl=None):
     """Calculate overhead cost for TM/QM/OM roles for a given month."""
-    oh     = get_oh_cfg(month)
+    oh     = get_oh_cfg(month, cl)
     result = {}
     total_cost_try = total_cost_eur = 0.0
     for role, defaults in [("TM",{"ratio":10,"salary":55000}),
@@ -237,124 +255,429 @@ def set_widths(ws, widths):
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-# ── Template builder (single sheet) ─────────────────────────
+# ── Template builder — 2 sheets only ────────────────────────
 def build_template(gh, gs, gfx, gctc, gbp, gm):
     wb = Workbook(); wb.remove(wb.active)
 
-    # ── Settings sheet ────────────────────────────────────────
-    ws_s = wb.create_sheet("Settings"); set_widths(ws_s, [35, 22])
-    hdr(ws_s,1,1,"Setting"); hdr(ws_s,1,2,"Value")
-    for ri,(lbl,val) in enumerate([
-        ("Worked Hours/Agent/Month", gh), ("Shrinkage %", gs),
-        ("FX Rate (EUR=TRY)", gfx), ("CTC Multiplier", gctc),
-        ("Bonus % of Base", gbp), ("Meal Card (TRY/mo)", gm),
-    ], start=2):
-        wcell(ws_s,ri,1,lbl); inp(ws_s,ri,2,val,fmt="#,##0.00")
+    # ══ Sheet 1: HOW TO USE ══════════════════════════════════
+    wi = wb.create_sheet("① How To Use")
+    set_widths(wi, [6, 28, 55])
+    wi.row_dimensions[1].height = 30
 
-    # ── Single data sheet with all months ────────────────────
-    ws = wb.create_sheet("Budget Data")
-    set_widths(ws, [10, 18, 10, 22, 22, 22, 16, 18, 18, 14, 22])
+    # Title banner
+    tc = wi.cell(row=1, column=1, value="CC Budget Tool — Import Template")
+    tc.font   = Font(name="Calibri", bold=True, size=14, color="FFFFFF")
+    tc.fill   = PatternFill("solid", start_color="1F4E79")
+    tc.alignment = Alignment(horizontal="left", vertical="center")
+    wi.merge_cells("A1:C1")
 
-    col_hdrs  = ["Month","Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
-                 "Shrinkage Override","FX Override","Hours Override",
-                 "Attrition Target %","Backfill HC","Backfill Salary (TRY)"]
-    col_hints = ["Jan/Feb/etc","e.g. DE, EN, TR","agents","monthly gross TRY","billable EUR/hr",
-                 "blank=global","blank=global","blank=global",
-                 "e.g. 0.05=5%","auto=HC×attrition%","blank=same as prod salary"]
+    steps = [
+        ("①", "Open sheet '② Budget Data'",          "This is the only sheet you need to fill in."),
+        ("②", "Fill BLUE cells row by row",           "Each row = one language/team block for that month."),
+        ("③", "Month column",                          "Use exactly: Jan  Feb  Mar  Apr  May  Jun  Jul  Aug  Sep  Oct  Nov  Dec"),
+        ("④", "Required columns",                      "Month · Language · HC · Base Salary (TRY) · Unit Price (EUR/hr)"),
+        ("⑤", "Optional overrides (leave blank)",      "Shrinkage %  ·  FX Rate  ·  Hours/Month  ·  Attrition %  ·  COLA Date  ·  COLA New UP"),
+        ("⑥", "COLA date format",                      "YYYY-MM-DD  e.g.  2025-04-15  — the new unit price applies from that date, prorated for the transition month."),
+        ("⑦", "Save & import",                         "Save this file → go to the app → sidebar → '⬆ Import Excel'."),
+    ]
+    for ri, (num, title, detail) in enumerate(steps, start=3):
+        wi.row_dimensions[ri].height = 22
+        n = wi.cell(row=ri, column=1, value=num)
+        n.font = Font(name="Calibri", bold=True, color="1F4E79", size=11)
+        t = wi.cell(row=ri, column=2, value=title)
+        t.font = Font(name="Calibri", bold=True, color="1F4E79", size=11)
+        d = wi.cell(row=ri, column=3, value=detail)
+        d.font = Font(name="Calibri", italic=True, color="444444", size=10)
 
-    # Title
-    ws["A1"].value = "CC Budget Tool - Data Template"
-    ws["A1"].font  = Font(name="Calibri", bold=True, size=13, color="1F4E79")
-    ws["A2"].value = "Fill in BLUE cells below. Month column must match exactly: Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec"
-    ws["A2"].font  = Font(name="Calibri", italic=True, color="444444", size=10)
+    # Colour legend
+    wi.row_dimensions[11].height = 8
+    wi.cell(row=12, column=1, value="Colour guide").font = Font(bold=True, color="333333")
+    inp(wi, 13, 2, "Blue cell = fill this in")
+    note(wi, 13, 3, "White/grey cell = calculated or optional")
 
-    # Header row
-    for ci, h in enumerate(col_hdrs, 1): hdr(ws, 3, ci, h)
-    # Hint row
-    for ci, ht in enumerate(col_hints, 1): note(ws, 4, ci, ht)
+    # ══ Sheet 2: BUDGET DATA ══════════════════════════════════
+    ws = wb.create_sheet("② Budget Data")
+    COLS   = ["Month","Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
+              "Shrinkage %","FX Rate","Hours/Month","Attrition %","COLA Date","COLA New UP (EUR/hr)"]
+    HINTS  = ["Jan … Dec","e.g. DE EN TR","integer","monthly gross","billable €/hr",
+              "blank=global","blank=global","blank=global","blank=global","YYYY-MM-DD  blank=none","blank=none"]
+    WIDTHS = [10, 18, 8, 20, 20, 14, 12, 14, 13, 18, 22]
+    REQUIRED = {0,1,2,3,4}  # Month, Language, HC, Salary, UP — must-fill
 
-    # Pre-fill existing blocks grouped by month, else 3 blank rows per month
+    set_widths(ws, WIDTHS)
+    ws.freeze_panes = "A5"  # freeze title + header + hints rows
+
+    # Title row
+    t = ws.cell(row=1, column=1, value="CC Budget Tool — Budget Data")
+    t.font = Font(name="Calibri", bold=True, size=13, color="FFFFFF")
+    t.fill = PatternFill("solid", start_color="1F4E79")
+    t.alignment = Alignment(horizontal="left", vertical="center")
+    ws.merge_cells(f"A1:{get_column_letter(len(COLS))}1")
+    ws.row_dimensions[1].height = 26
+
+    # Sub-title
+    st_cell = ws.cell(row=2, column=1,
+        value="Fill BLUE cells only. Required: Month, Language, HC, Base Salary, Unit Price. All others are optional overrides.")
+    st_cell.font = Font(name="Calibri", italic=True, color="555555", size=10)
+    ws.merge_cells(f"A2:{get_column_letter(len(COLS))}2")
+
+    # Header + hint rows
+    for ci, (h, hint) in enumerate(zip(COLS, HINTS), 1):
+        hdr(ws, 3, ci, h)
+        note(ws, 4, ci, hint)
+        # mark required columns with a star in header
+        if ci-1 in REQUIRED:
+            ws.cell(row=3, column=ci).value = h + " *"
+
+    ws.row_dimensions[3].height = 18
+    ws.row_dimensions[4].height = 14
+
+    # Pre-fill data rows
     ri = 5
+    att = st.session_state.attrition_rate
+    cola_cfgs = client().get("cola_configs", {})
     for m in MONTHS:
-        existing = st.session_state.blocks.get(m, [])
-        rows = existing or [{"lang":"","hc":0,"salary":0,"unit_price":0,
-                             "shrink_override":None,"fx_override":None,"hours_override":None}]
-        for b in rows:
-            hc_val   = b.get("hc", 0)
-            att_rate = st.session_state.attrition_rate
-            bf_hc    = hc_val * att_rate  # exact fraction
-            vals = [m, b.get("lang",""), hc_val, b.get("salary",0), b.get("unit_price",0),
-                    b["shrink_override"] if b.get("shrink_override") is not None else "",
-                    b["fx_override"]     if b.get("fx_override")     is not None else "",
-                    b["hours_override"]  if b.get("hours_override")  is not None else "",
-                    att_rate, bf_hc, b.get("salary",0)]
-            for ci, v in enumerate(vals, 1): inp(ws, ri, ci, v)
+        blocks_m = st.session_state.blocks.get(m, [])
+        rows = blocks_m or [{"lang":"","hc":0,"salary":0,"unit_price":0,
+                              "shrink_override":None,"fx_override":None,"hours_override":None}]
+        is_first = True
+        for blk_i, b in enumerate(rows):
+            cola = cola_cfgs.get(str(blk_i), {})
+            vals = [
+                m if is_first else "",   # month label only on first row of group
+                b.get("lang",""),
+                b.get("hc", 0),
+                b.get("salary", 0),
+                b.get("unit_price", 0),
+                b["shrink_override"] if b.get("shrink_override") is not None else "",
+                b["fx_override"]     if b.get("fx_override")     is not None else "",
+                b["hours_override"]  if b.get("hours_override")  is not None else "",
+                att,
+                cola.get("date",""),
+                cola.get("new_up",""),
+            ]
+            for ci, v in enumerate(vals, 1):
+                # required cols → blue input style; optional → lighter
+                if ci-1 in REQUIRED:
+                    inp(ws, ri, ci, v)
+                else:
+                    c = ws.cell(row=ri, column=ci, value=v)
+                    c.font   = Font(name="Calibri", color="333333", size=11)
+                    c.fill   = PatternFill("solid", start_color="F0F4FF")
+                    c.border = bdr()
+                    c.alignment = Alignment(horizontal="left", vertical="center")
+            is_first = False
             ri += 1
-        # blank separator row between months
+
+        # Light divider row between month groups
+        for ci in range(1, len(COLS)+1):
+            c = ws.cell(row=ri, column=ci, value="")
+            c.fill = PatternFill("solid", start_color="E8EDF5")
+            c.border = bdr()
         ri += 1
 
     buf = BytesIO(); wb.save(buf); buf.seek(0); return buf.getvalue()
 
-# ── Data export builder ───────────────────────────────────────
+# ── Export builder — 3 clean sheets ─────────────────────────
 def build_export(g):
     wb = Workbook(); wb.remove(wb.active)
 
-    # Summary
-    ws = wb.create_sheet("Summary"); set_widths(ws, [12,18,18,18,12,10])
-    for ci, h in enumerate(["Month","Revenue (EUR)","Cost (EUR)","Margin (EUR)","Margin %","HC"],1):
-        hdr(ws,1,ci,h)
-    fy = {"rev":0,"cost":0,"margin":0}
-    for ri, m in enumerate(MONTHS, start=2):
-        t = get_totals(m, g)
-        fy["rev"]+=t["rev"]; fy["cost"]+=t["cost"]; fy["margin"]+=t["margin"]
-        row = [m, round(t["rev"],2), round(t["cost"],2), round(t["margin"],2),
-               round(t["margin"]/t["rev"],4) if t["rev"] else 0, int(t["hc"])]
-        for ci, v in enumerate(row, 1):
-            c = ws.cell(row=ri, column=ci, value=v); c.border = bdr()
-            if ci in (2,3,4): c.number_format = "#,##0.00"
-            if ci == 5:       c.number_format = "0.0%"
-    for ci, v in enumerate([
-        "Full Year", round(fy["rev"],2), round(fy["cost"],2), round(fy["margin"],2),
-        round(fy["margin"]/fy["rev"],4) if fy["rev"] else 0, ""
-    ], 1):
-        c = wcell(ws, len(MONTHS)+2, ci, v, bold=True, bg="E8F0FE")
-        if ci in (2,3,4): c.number_format = "#,##0.00"
-        if ci == 5:       c.number_format = "0.0%"
+    # helper — number cell
+    def num(ws, r, c, v, fmt="#,##0", bold=False, bg=None):
+        cell = wcell(ws, r, c, v, bold=bold, bg=bg)
+        cell.number_format = fmt
+        return cell
 
-    # Settings
-    ws2 = wb.create_sheet("Settings"); set_widths(ws2, [35,22])
-    hdr(ws2,1,1,"Setting"); hdr(ws2,1,2,"Value")
-    for ri,(lbl,val) in enumerate([
-        ("Worked Hours/Agent/Month",g["hours"]),("Shrinkage %",g["shrink"]),
-        ("FX Rate (EUR=TRY)",g["fx"]),("CTC Multiplier",g["ctc"]),
-        ("Bonus % of Base",g["bonus_pct"]),("Meal Card (TRY/mo)",g["meal"]),
-    ], start=2):
-        wcell(ws2,ri,1,lbl); inp(ws2,ri,2,val,fmt="#,##0.00")
+    # ══ Sheet 1: P&L SUMMARY ═════════════════════════════════
+    ws1 = wb.create_sheet("P&L Summary")
+    PL_COLS = ["Month","Revenue (EUR)","Prod Cost (EUR)","Backfill Cost (EUR)",
+               "Overhead Cost (EUR)","Total Cost (EUR)","Gross Margin (EUR)",
+               "Margin %","Break-even €/hr","Avg Selling €/hr",
+               "Prod HC","TM HC","QM HC","OM HC","Net HC (EOM)"]
+    set_widths(ws1, [10,16,16,16,16,16,16,10,14,14,10,8,8,8,14])
 
-    # Per month
-    dh = ["Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
-          "Shrinkage Override","FX Override","Hours Override",
-          "Revenue (EUR)","Cost (EUR)","Margin (EUR)"]
+    # title
+    t = ws1.cell(row=1, column=1, value="CC Budget — P&L Summary")
+    t.font = Font(name="Calibri", bold=True, size=13, color="FFFFFF")
+    t.fill = PatternFill("solid", start_color="1F4E79")
+    t.alignment = Alignment(horizontal="left", vertical="center")
+    ws1.merge_cells(f"A1:{get_column_letter(len(PL_COLS))}1")
+    ws1.row_dimensions[1].height = 26
+
+    for ci, h in enumerate(PL_COLS, 1): hdr(ws1, 2, ci, h)
+
+    fy = {k: 0.0 for k in ["rev","cost","margin","cost_excl_backfill",
+                             "backfill_cost_eur","oh_cost_eur","hrs_billable"]}
+    for ri, m in enumerate(MONTHS, start=3):
+        t_m = get_totals(m, g)
+        oh  = t_m["oh"]
+        avg_up = t_m["rev"] / t_m["hrs_billable"] if t_m["hrs_billable"] else 0
+        row_vals = [
+            m,
+            t_m["rev"], t_m["cost_excl_backfill"], t_m["backfill_cost_eur"],
+            t_m["oh_cost_eur"], t_m["cost"], t_m["margin"],
+            t_m["margin"]/t_m["rev"] if t_m["rev"] else 0,
+            t_m["breakeven_up"], avg_up,
+            t_m["hc"], oh["TM"]["hc"], oh["QM"]["hc"], oh["OM"]["hc"], t_m["net_hc"],
+        ]
+        for ci, v in enumerate(row_vals, 1):
+            if ci == 1:
+                wcell(ws1, ri, ci, v, bold=True)
+            elif ci == 8:
+                num(ws1, ri, ci, v, fmt="0.0%")
+            elif ci in (9,10):
+                num(ws1, ri, ci, v, fmt='€#,##0.00"/hr"')
+            elif ci > 10:
+                num(ws1, ri, ci, v, fmt="0.00")
+            else:
+                num(ws1, ri, ci, v)
+        # accumulate FY
+        for k in fy:
+            fy[k] += t_m.get(k, 0)
+
+    # Full Year row
+    fy_ri = len(MONTHS) + 3
+    fy_avg = fy["rev"] / fy["hrs_billable"] if fy["hrs_billable"] else 0
+    fy_be  = fy["cost"] / fy["hrs_billable"] if fy["hrs_billable"] else 0
+    fy_row = [
+        "Full Year",
+        fy["rev"], fy["cost_excl_backfill"], fy["backfill_cost_eur"],
+        fy["oh_cost_eur"], fy["cost"], fy["margin"],
+        fy["margin"]/fy["rev"] if fy["rev"] else 0,
+        fy_be, fy_avg,
+        "","","","","",
+    ]
+    for ci, v in enumerate(fy_row, 1):
+        bg = "E8F0FE"
+        if ci == 1: wcell(ws1, fy_ri, ci, v, bold=True, bg=bg)
+        elif ci == 8: num(ws1, fy_ri, ci, v, fmt="0.0%", bold=True, bg=bg)
+        elif ci in (9,10): num(ws1, fy_ri, ci, v, fmt='€#,##0.00"/hr"', bold=True, bg=bg)
+        elif isinstance(v, float): num(ws1, fy_ri, ci, v, bold=True, bg=bg)
+        else: wcell(ws1, fy_ri, ci, v, bold=True, bg=bg)
+
+    # ══ Sheet 2: BLOCK DETAIL ════════════════════════════════
+    ws2 = wb.create_sheet("Block Detail")
+    BD_COLS = ["Month","Block","Language","HC","Base Salary (TRY)","Unit Price (EUR/hr)",
+               "Eff. UP (EUR/hr)","Eff. Hours/Agent","Revenue (EUR)","Prod Cost (EUR)","Margin (EUR)","Margin %"]
+    set_widths(ws2, [10,8,16,8,18,18,16,16,16,16,16,10])
+
+    t2 = ws2.cell(row=1, column=1, value="CC Budget — Block Detail")
+    t2.font = Font(name="Calibri", bold=True, size=13, color="FFFFFF")
+    t2.fill = PatternFill("solid", start_color="1F4E79")
+    t2.alignment = Alignment(horizontal="left", vertical="center")
+    ws2.merge_cells(f"A1:{get_column_letter(len(BD_COLS))}1")
+    ws2.row_dimensions[1].height = 26
+    for ci, h in enumerate(BD_COLS, 1): hdr(ws2, 2, ci, h)
+
+    ri2 = 3
     for m in MONTHS:
-        ws3 = wb.create_sheet(m); set_widths(ws3, [18,8,20,20,20,14,18,16,16,16])
-        for ci, h in enumerate(dh, 1): hdr(ws3,1,ci,h)
-        for ri, b in enumerate(st.session_state.blocks.get(m,[]), start=2):
-            shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
-            fx     = b["fx_override"]     if b.get("fx_override")     is not None else g["fx"]
-            hours  = b["hours_override"]  if b.get("hours_override")  is not None else g["hours"]
-            hc,sal,up = b.get("hc",0),b.get("salary",0),b.get("unit_price",0)
-            eff = hours*(1-shrink); rev = hc*eff*up
-            cost = (hc*sal*g["ctc"]*(1+g["bonus_pct"])+hc*g["meal"])/fx if fx else 0
-            row = [b.get("lang",""),hc,sal,up,
-                   b["shrink_override"] if b.get("shrink_override") is not None else "",
-                   b["fx_override"]     if b.get("fx_override")     is not None else "",
-                   b["hours_override"]  if b.get("hours_override")  is not None else "",
-                   round(rev,2),round(cost,2),round(rev-cost,2)]
-            for ci, v in enumerate(row, 1):
-                c = ws3.cell(row=ri,column=ci,value=v); c.border=bdr()
-                if ci in (8,9,10): c.number_format="#,##0.00"
+        for blk_i, b in enumerate(st.session_state.blocks.get(m, [])):
+            raw_shrink = b.get("shrink_override") or g["shrink"]
+            shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
+            fx     = b.get("fx_override")    or g["fx"]
+            hours  = b.get("hours_override") or g["hours"]
+            hc, sal = b.get("hc",0), b.get("salary",0)
+            base_up = b.get("unit_price",0)
+            eff_up  = effective_up(m, blk_i, base_up)
+            eff_hrs = hours * (1 - shrink)
+            rev     = hc * eff_hrs * eff_up
+            cost    = (hc * sal * g["ctc"] * (1 + g["bonus_pct"]) + hc * g["meal"]) / fx if fx else 0
+            margin  = rev - cost
+            row_vals = [m, f"#{blk_i+1}", b.get("lang",""), hc, sal, base_up,
+                        eff_up, eff_hrs, rev, cost, margin,
+                        margin/rev if rev else 0]
+            for ci, v in enumerate(row_vals, 1):
+                if ci in (1,2,3): wcell(ws2, ri2, ci, v)
+                elif ci == 12:    num(ws2, ri2, ci, v, fmt="0.0%")
+                elif ci in (5,):  num(ws2, ri2, ci, v, fmt="#,##0")
+                elif ci in (6,7,8): num(ws2, ri2, ci, v, fmt="#,##0.00")
+                else:             num(ws2, ri2, ci, v)
+            ri2 += 1
+
+    # ══ Sheet 3: SETTINGS SNAPSHOT ═══════════════════════════
+    ws3 = wb.create_sheet("Settings Snapshot")
+    set_widths(ws3, [32, 20])
+    t3 = ws3.cell(row=1, column=1, value="Global Settings at time of export")
+    t3.font = Font(name="Calibri", bold=True, size=12, color="FFFFFF")
+    t3.fill = PatternFill("solid", start_color="1F4E79")
+    t3.alignment = Alignment(horizontal="left", vertical="center")
+    ws3.merge_cells("A1:B1")
+    ws3.row_dimensions[1].height = 24
+
+    hdr(ws3,2,1,"Setting"); hdr(ws3,2,2,"Value")
+    settings = [
+        ("Worked Hours / Agent / Month", g["hours"]),
+        ("Shrinkage % (global)",         f"{g['shrink']*100:.1f}%"),
+        ("FX Rate (1 EUR = TRY)",        g["fx"]),
+        ("CTC Multiplier",               g["ctc"]),
+        ("Bonus % of Base",              f"{g['bonus_pct']*100:.1f}%"),
+        ("Meal Card / Agent / Month (TRY)", g["meal"]),
+        ("Monthly Attrition Rate",       f"{st.session_state.attrition_rate*100:.1f}%"),
+        ("Backfill Training Efficiency", f"{st.session_state.backfill_efficiency*100:.0f}%"),
+        ("Export date",                  _dt.date.today().isoformat()),
+    ]
+    for ri3, (lbl, val) in enumerate(settings, start=3):
+        wcell(ws3, ri3, 1, lbl)
+        wcell(ws3, ri3, 2, val)
 
     buf = BytesIO(); wb.save(buf); buf.seek(0); return buf.getvalue()
+
+# ── PDF Report builder ───────────────────────────────────────
+def build_pdf(g):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm,
+                            topMargin=1.5*cm, bottomMargin=1.5*cm)
+
+    # Colours
+    DARK   = colors.HexColor("#0e1420")
+    NAVY   = colors.HexColor("#1F4E79")
+    BLUE   = colors.HexColor("#3b82f6")
+    GREEN  = colors.HexColor("#10b981")
+    RED    = colors.HexColor("#ef4444")
+    AMBER  = colors.HexColor("#f59e0b")
+    LIGHT  = colors.HexColor("#e8edf5")
+    MID    = colors.HexColor("#8b96b0")
+    ROW_A  = colors.HexColor("#131929")
+    ROW_B  = colors.HexColor("#0e1420")
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("title", fontSize=20, textColor=LIGHT,
+                                  fontName="Helvetica-Bold", spaceAfter=4)
+    sub_style   = ParagraphStyle("sub",   fontSize=10, textColor=MID,
+                                  fontName="Helvetica", spaceAfter=16)
+    h2_style    = ParagraphStyle("h2",    fontSize=13, textColor=LIGHT,
+                                  fontName="Helvetica-Bold", spaceBefore=14, spaceAfter=6)
+    note_style  = ParagraphStyle("note",  fontSize=8,  textColor=MID,
+                                  fontName="Helvetica-Oblique")
+
+    def p(text, style=None): return Paragraph(text, style or styles["Normal"])
+
+    story = []
+
+    # ── Cover block ──────────────────────────────────────────
+    story.append(Paragraph(f"CC Budget Report", title_style))
+    story.append(Paragraph(f"Client: <b>{client()['name']}</b>  ·  Generated: {_dt.date.today().isoformat()}", sub_style))
+    story.append(HRFlowable(width="100%", color=NAVY, thickness=1.5, spaceAfter=14))
+
+    # ── KPI summary row ──────────────────────────────────────
+    all_totals = [get_totals(m, g) for m in MONTHS]
+    fy_rev    = sum(t["rev"]    for t in all_totals)
+    fy_cost   = sum(t["cost"]   for t in all_totals)
+    fy_margin = sum(t["margin"] for t in all_totals)
+    fy_mgn_pct= fy_margin/fy_rev*100 if fy_rev else 0
+    fy_hc     = max(t["hc"] for t in all_totals)
+
+    kpi_data = [
+        ["Full Year Revenue", "Total Cost", "Gross Margin", "Margin %", "Peak HC"],
+        [f"€{fy_rev:,.0f}", f"€{fy_cost:,.0f}", f"€{fy_margin:,.0f}", f"{fy_mgn_pct:.1f}%", f"{int(fy_hc)}"],
+    ]
+    kpi_col_w = [3.2*cm]*5
+    kpi_tbl = Table(kpi_data, colWidths=kpi_col_w)
+    kpi_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), NAVY),
+        ("TEXTCOLOR",  (0,0), (-1,0), LIGHT),
+        ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE",   (0,0), (-1,0), 8),
+        ("BACKGROUND", (0,1), (-1,1), ROW_A),
+        ("TEXTCOLOR",  (0,1), (-1,1), LIGHT),
+        ("FONTNAME",   (0,1), (-1,1), "Helvetica-Bold"),
+        ("FONTSIZE",   (0,1), (-1,1), 11),
+        ("ALIGN",      (0,0), (-1,-1), "CENTER"),
+        ("VALIGN",     (0,0), (-1,-1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0,1),(-1,1), [ROW_A]),
+        ("GRID",       (0,0), (-1,-1), 0.4, colors.HexColor("#2a3347")),
+        ("TOPPADDING", (0,0), (-1,-1), 7),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+    ]))
+    story.append(kpi_tbl)
+    story.append(Spacer(1, 14))
+
+    # ── Monthly P&L table ────────────────────────────────────
+    story.append(Paragraph("Monthly P&L", h2_style))
+    story.append(HRFlowable(width="100%", color=NAVY, thickness=0.5, spaceAfter=6))
+
+    PL_HDR = ["Month","Revenue","Prod Cost","Backfill","Training","Overhead","Total Cost","GM","GM%","BE €/hr"]
+    pl_rows = [PL_HDR]
+    for m, t in zip(MONTHS, all_totals):
+        oh_tot = t["oh_cost_eur"]
+        avg_up = t["rev"]/t["hrs_billable"] if t["hrs_billable"] else 0
+        mg_col = GREEN if t["margin"] >= 0 else RED
+        pl_rows.append([
+            m,
+            f"€{t['rev']:,.0f}",
+            f"€{t['cost_excl_backfill']:,.0f}",
+            f"€{t['backfill_cost_eur']:,.0f}",
+            f"€{t.get('training_cost_eur',0):,.0f}",
+            f"€{oh_tot:,.0f}",
+            f"€{t['cost']:,.0f}",
+            f"€{t['margin']:,.0f}",
+            f"{t['margin']/t['rev']*100:.1f}%" if t['rev'] else "—",
+            f"€{t['breakeven_up']:.2f}",
+        ])
+    # Full Year row
+    fy_oh = sum(t["oh_cost_eur"] for t in all_totals)
+    fy_bf = sum(t["backfill_cost_eur"] for t in all_totals)
+    fy_tr = sum(t.get("training_cost_eur",0) for t in all_totals)
+    fy_pc = sum(t["cost_excl_backfill"] for t in all_totals)
+    fy_be = fy_cost / sum(t["hrs_billable"] for t in all_totals) if sum(t["hrs_billable"] for t in all_totals) else 0
+    pl_rows.append([
+        "Full Year",
+        f"€{fy_rev:,.0f}", f"€{fy_pc:,.0f}", f"€{fy_bf:,.0f}", f"€{fy_tr:,.0f}",
+        f"€{fy_oh:,.0f}", f"€{fy_cost:,.0f}", f"€{fy_margin:,.0f}",
+        f"{fy_mgn_pct:.1f}%", f"€{fy_be:.2f}",
+    ])
+
+    col_w = [1.4*cm, 2.0*cm, 2.0*cm, 1.8*cm, 1.8*cm, 1.8*cm, 2.0*cm, 2.0*cm, 1.3*cm, 1.8*cm]
+    pl_tbl = Table(pl_rows, colWidths=col_w, repeatRows=1)
+    ts = [
+        ("BACKGROUND",    (0,0),  (-1,0),  NAVY),
+        ("TEXTCOLOR",     (0,0),  (-1,0),  LIGHT),
+        ("FONTNAME",      (0,0),  (-1,0),  "Helvetica-Bold"),
+        ("FONTSIZE",      (0,0),  (-1,-1), 7.5),
+        ("ALIGN",         (1,0),  (-1,-1), "RIGHT"),
+        ("ALIGN",         (0,0),  (0,-1),  "LEFT"),
+        ("GRID",          (0,0),  (-1,-1), 0.3, colors.HexColor("#2a3347")),
+        ("TOPPADDING",    (0,0),  (-1,-1), 4),
+        ("BOTTOMPADDING", (0,0),  (-1,-1), 4),
+        # Full Year row bold
+        ("FONTNAME",  (0,len(pl_rows)-1), (-1,len(pl_rows)-1), "Helvetica-Bold"),
+        ("BACKGROUND",(0,len(pl_rows)-1), (-1,len(pl_rows)-1), colors.HexColor("#1a2540")),
+        ("TEXTCOLOR", (0,len(pl_rows)-1), (-1,len(pl_rows)-1), LIGHT),
+    ]
+    # Alternating rows
+    for r in range(1, len(pl_rows)-1):
+        bg = ROW_A if r % 2 == 1 else ROW_B
+        ts.append(("BACKGROUND", (0,r), (-1,r), bg))
+        ts.append(("TEXTCOLOR",  (0,r), (-1,r), LIGHT))
+        # Colour margin cell
+        margin_val = all_totals[r-1]["margin"]
+        mg_c = colors.HexColor("#10b981") if margin_val >= 0 else colors.HexColor("#ef4444")
+        ts.append(("TEXTCOLOR", (7,r), (7,r), mg_c))
+        ts.append(("TEXTCOLOR", (8,r), (8,r), mg_c))
+    pl_tbl.setStyle(TableStyle(ts))
+    story.append(pl_tbl)
+
+    # ── Footer ───────────────────────────────────────────────
+    story.append(Spacer(1, 18))
+    story.append(HRFlowable(width="100%", color=NAVY, thickness=0.5))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        f"CC Budget Tool  ·  FX: 1 EUR = ₺{g['fx']:,.2f}  ·  CTC: {g['ctc']}x  ·  "
+        f"Attrition: {st.session_state.attrition_rate*100:.1f}%  ·  "
+        f"Training cost/hire: ₺{client().get('opex',{}).get('training_cost_per_hire',0):,.0f}",
+        note_style))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
 
 # ── SIDEBAR ───────────────────────────────────────────────────
 with st.sidebar:
@@ -388,6 +711,16 @@ with st.sidebar:
     st.session_state.attrition_rate       = attrition_pct
     st.session_state.backfill_efficiency  = bf_efficiency
 
+    st.divider()
+    st.markdown('<div class="section-title">OPEX — Training</div>', unsafe_allow_html=True)
+    opex_training = st.number_input(
+        "Training cost per backfill hire (TRY)",
+        value=float(client().get("opex", {}).get("training_cost_per_hire", 5000)),
+        step=500.0, min_value=0.0,
+        help="One-time cost per new backfill agent: onboarding, training materials, trainer time."
+    )
+    client().setdefault("opex", {})["training_cost_per_hire"] = opex_training
+
     g = dict(hours=g_hours, shrink=g_shrink, fx=g_fx,
              ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal)
 
@@ -410,6 +743,17 @@ with st.sidebar:
         use_container_width=True,
         type="primary",
     )
+    try:
+        pdf_data = build_pdf(g)
+        st.download_button(
+            label="📄 Export PDF Report",
+            data=pdf_data,
+            file_name=f"CC_Budget_{client()['name'].replace(' ','_')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    except Exception as pdf_err:
+        st.caption(f"PDF unavailable: {pdf_err}")
 
     st.divider()
     uploaded = st.file_uploader("⬆ Import Excel", type=["xlsx"])
@@ -441,7 +785,7 @@ with st.sidebar:
                         "hours_override":  sf(row.get("Hours Override","")),
                     })
                     loaded += 1
-                st.session_state.blocks = new_blocks
+                client()["blocks"] = new_blocks
             else:
                 # Legacy per-month sheet format
                 for m in MONTHS:
@@ -460,7 +804,7 @@ with st.sidebar:
                             "fx_override":     sf(row.get("FX Override","")),
                             "hours_override":  sf(row.get("Hours Override","")),
                         })
-                    st.session_state.blocks[m] = blocks
+                    client()["blocks"][m] = blocks
                     loaded += len(blocks)
             st.success(f"✅ Imported {loaded} blocks across all months!")
             st.rerun()
@@ -469,6 +813,44 @@ with st.sidebar:
 
 # ── MAIN ──────────────────────────────────────────────────────
 st.markdown("## 📞 CC Budget & Forecast")
+
+# ── Client tabs ───────────────────────────────────────────────
+cl_row = st.columns([8, 2])
+with cl_row[0]:
+    client_names = [c["name"] for c in st.session_state.clients]
+    # Render as buttons
+    btn_cols = st.columns(min(len(client_names) + 1, 10))
+    for ci, cname in enumerate(client_names):
+        is_active = ci == st.session_state.active_client
+        if btn_cols[ci].button(
+            f"{'✦ ' if is_active else ''}{cname}",
+            key=f"cl_tab_{ci}",
+            type="primary" if is_active else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state.active_client = ci
+            st.rerun()
+    if len(client_names) < 8:
+        if btn_cols[len(client_names)].button("＋ Add Client", key="add_cl", use_container_width=True):
+            n = len(st.session_state.clients) + 1
+            st.session_state.clients.append(_default_client(f"Client {chr(64+n)}"))
+            st.session_state.active_client = n - 1
+            st.rerun()
+
+with cl_row[1]:
+    cl_name_input = st.text_input("Rename client", value=client()["name"],
+                                   key=f"cl_name_{st.session_state.active_client}",
+                                   label_visibility="collapsed", placeholder="Client name")
+    if cl_name_input != client()["name"]:
+        client()["name"] = cl_name_input
+
+    if len(st.session_state.clients) > 1:
+        if st.button("🗑 Remove this client", key="del_cl", use_container_width=True):
+            st.session_state.clients.pop(st.session_state.active_client)
+            st.session_state.active_client = max(0, st.session_state.active_client - 1)
+            st.rerun()
+
+st.markdown("---")
 
 cols_tabs = st.columns(12)
 for i, m in enumerate(MONTHS):
@@ -572,7 +954,7 @@ with st.expander("📋 Copy Month to Multiple Months"):
             st.error("Please select at least one destination month.")
         else:
             for m in selected_targets:
-                st.session_state.blocks[m] = copy.deepcopy(st.session_state.blocks[copy_from])
+                client()["blocks"][m] = copy.deepcopy(client()["blocks"][copy_from])
             targets_str = ", ".join(selected_targets)
             st.success(f"✅ Copied **{copy_from}** → {targets_str}")
             st.rerun()
@@ -583,7 +965,7 @@ with st.expander("📋 Copy Month to Multiple Months"):
             st.caption("No destination months selected yet.")
 
 st.markdown('<div class="section-title">Production Blocks</div>', unsafe_allow_html=True)
-blocks = st.session_state.blocks[active]
+blocks = client()["blocks"][active]
 
 if st.button("+ Add Production Block", type="secondary"):
     blocks.append({"lang":"","hc":0,"salary":0,"unit_price":0,
@@ -638,8 +1020,8 @@ for i, b in enumerate(blocks):
                                    help="Override attrition rate for this block only e.g. 0.08 for 8%")
 
         # ── COLA / UP increase ────────────────────────────────
-        cola_key = str(i)  # global per block, applies across all months
-        cola_cfg = st.session_state.cola_configs.get(cola_key, {})
+        cola_key = str(i)
+        cola_cfg = client()["cola_configs"].get(cola_key, {})
         with st.expander("📈 COLA / Unit Price Change", expanded=bool(cola_cfg.get("date"))):
             cc1, cc2, cc3 = st.columns([2, 2, 1])
             cola_date_val = cola_cfg.get("date", "")
@@ -652,12 +1034,12 @@ for i, b in enumerate(blocks):
                                               value=cola_up_val, step=0.1, min_value=0.0,
                                               key=f"cola_up_{active}_{i}")
             if cc3.button("Clear COLA", key=f"cola_clr_{active}_{i}", use_container_width=True):
-                st.session_state.cola_configs.pop(cola_key, None)
+                client()["cola_configs"].pop(cola_key, None)
                 st.rerun()
             if new_cola_date.strip():
                 try:
                     _dt.date.fromisoformat(new_cola_date.strip())
-                    st.session_state.cola_configs[cola_key] = {"date": new_cola_date.strip(), "new_up": new_cola_up}
+                    client()["cola_configs"][cola_key] = {"date": new_cola_date.strip(), "new_up": new_cola_up}
                     # Show proration preview for current month
                     eff = effective_up(active, i, b.get("unit_price", 0))
                     if eff != b.get("unit_price", 0):
@@ -763,7 +1145,7 @@ st.divider()
 st.markdown("### 🏢 Overhead Roles")
 
 # Determine if this month has a per-month override
-has_monthly_override = st.session_state.overhead_monthly.get(active) is not None
+has_monthly_override = client()["overhead_monthly"].get(active) is not None
 mode_label = f"📌 {active} override active" if has_monthly_override else "🌐 Global config (all months)"
 
 oh_mode_col, oh_action_col = st.columns([3,2])
@@ -773,19 +1155,19 @@ with oh_action_col:
     act1, act2 = st.columns(2)
     if act1.button("📋 Copy global → all months", use_container_width=True,
                    help="Apply current global config to every month, clearing any per-month overrides"):
-        st.session_state.overhead_monthly = {m: None for m in MONTHS}
+        client()["overhead_monthly"] = {m: None for m in MONTHS}
         st.success("Global overhead applied to all months.")
         st.rerun()
     if has_monthly_override:
         if act2.button(f"✖ Clear {active} override", use_container_width=True,
                        help=f"Remove {active} override and fall back to global"):
-            st.session_state.overhead_monthly[active] = None
+            client()["overhead_monthly"][active] = None
             st.rerun()
     else:
         act2.caption("No override for this month")
 
 # Work on global or monthly config
-oh_data = get_oh_cfg(active)
+oh_data = get_oh_cfg(active, client())
 prod_hc_now = t["hc"]
 
 oh_cols = st.columns(3)
@@ -852,11 +1234,10 @@ for col, (role, meta) in zip(oh_cols, ROLE_META.items()):
         oh_data[role]["hc_override"] = float(hc_hired) if override_raw.strip() else None
         # If user changed anything and this was global, promote to per-month override
         # so other months stay untouched
-        if st.session_state.overhead_monthly.get(active) is None:
-            # First edit on this month — promote global to a per-month copy
+        if client()["overhead_monthly"].get(active) is None:
             import copy as _copy
-            st.session_state.overhead_monthly[active] = _copy.deepcopy(st.session_state.overhead_global)
-        st.session_state.overhead_monthly[active][role] = oh_data[role]
+            client()["overhead_monthly"][active] = _copy.deepcopy(client()["overhead_global"])
+        client()["overhead_monthly"][active][role] = oh_data[role]
 
 # Overhead summary bar
 oh_now = calc_overhead(active, prod_hc_now, g)
@@ -889,6 +1270,7 @@ LINE_ITEMS = [
     "Revenue",
     "  Prod. Cost",
     "  Backfill Cost",
+    "  Training Cost",
     "  TM Cost",
     "  QM Cost",
     "  OM Cost",
@@ -915,6 +1297,7 @@ pnl_try = {"Line Item": LINE_ITEMS}
 
 fy_sums = {k: 0.0 for k in ["rev","rev_try","cost","cost_try",
                               "cost_excl_backfill","backfill_cost_eur","backfill_cost_try",
+                              "training_cost_eur","training_cost_try",
                               "oh_cost_eur","oh_cost_try","margin","margin_try",
                               "hrs_billable","backfill_hrs","hrs"]}
 fy_oh = {"TM":{"cost_eur":0,"cost_try":0,"hc":0},
@@ -938,6 +1321,7 @@ for m in MONTHS:
             fmt_eur(mt["rev"]),
             fmt_eur(mt["cost_excl_backfill"]),
             fmt_eur(mt["backfill_cost_eur"]),
+            fmt_eur(mt.get("training_cost_eur",0)),
             fmt_eur(mt["oh"]["TM"]["cost_eur"]),
             fmt_eur(mt["oh"]["QM"]["cost_eur"]),
             fmt_eur(mt["oh"]["OM"]["cost_eur"]),
@@ -963,6 +1347,7 @@ for m in MONTHS:
             fmt_try(mt["rev_try"]),
             fmt_try(prod_c_try),
             fmt_try(mt["backfill_cost_try"]),
+            fmt_try(mt.get("training_cost_try",0)),
             fmt_try(mt["oh"]["TM"]["cost_try"]),
             fmt_try(mt["oh"]["QM"]["cost_try"]),
             fmt_try(mt["oh"]["OM"]["cost_try"]),
@@ -999,6 +1384,7 @@ def fy_row_eur():
         fmt_eur(fy_sums["rev"]),
         fmt_eur(fy_sums["cost_excl_backfill"]),
         fmt_eur(fy_sums["backfill_cost_eur"]),
+        fmt_eur(fy_sums["training_cost_eur"]),
         fmt_eur(fy_oh["TM"]["cost_eur"]),
         fmt_eur(fy_oh["QM"]["cost_eur"]),
         fmt_eur(fy_oh["OM"]["cost_eur"]),
@@ -1017,6 +1403,7 @@ def fy_row_try():
         fmt_try(fy_sums["rev_try"]),
         fmt_try(fy_prod_c_try),
         fmt_try(fy_sums["backfill_cost_try"]),
+        fmt_try(fy_sums["training_cost_try"]),
         fmt_try(fy_oh["TM"]["cost_try"]),
         fmt_try(fy_oh["QM"]["cost_try"]),
         fmt_try(fy_oh["OM"]["cost_try"]),
