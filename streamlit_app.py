@@ -101,6 +101,12 @@ def fmt_pct(v): return f"{v*100:.1f}%"
 import calendar as _cal
 import datetime as _dt
 
+def effective_hc(month, block):
+    """Return effective HC for a block in a given month.
+    Uses ramp schedule if defined, otherwise falls back to block base HC."""
+    ramp = block.get("hc_ramp", {})
+    return ramp.get(month, block.get("hc", 0))
+
 def effective_up(month, block_idx, base_up):
     """Return effective unit price for a month, prorated if COLA date falls in it.
     COLA date is treated as a position within the fiscal year (Jan=1 … Dec=12).
@@ -138,9 +144,10 @@ def get_totals(month, g):
         shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
         fx     = b["fx_override"]     if b.get("fx_override")     is not None else g["fx"]
         hours  = b["hours_override"]  if b.get("hours_override")  is not None else g["hours"]
-        hc, sal  = b.get("hc",0), b.get("salary",0)
-        base_up  = b.get("unit_price", 0)
-        up       = effective_up(month, blk_i, base_up)  # COLA-adjusted UP
+        hc      = effective_hc(month, b)              # ramp-adjusted HC
+        sal     = b.get("salary", 0)
+        base_up = b.get("unit_price", 0)
+        up      = effective_up(month, blk_i, base_up)  # COLA-adjusted UP
         eff          = hours * (1 - shrink)
         rev_eur      = hc * eff * up
         rev_try      = rev_eur * fx
@@ -157,7 +164,7 @@ def get_totals(month, g):
     bf_eff = st.session_state.backfill_efficiency
     weighted_att = 0.0
     for b in cl["blocks"].get(month, []):
-        hc_b = b.get("hc", 0)
+        hc_b = effective_hc(month, b)
         raw  = b.get("attrition_override")
         rate = raw if raw is not None else st.session_state.attrition_rate
         rate = max(0.0, min(1.0, rate if rate <= 1 else rate / 100))
@@ -1009,8 +1016,14 @@ with st.expander("📋 Copy Month to Multiple Months"):
         else:
             for m in selected_targets:
                 client()["blocks"][m] = copy.deepcopy(client()["blocks"][copy_from])
+                # Copy per-month overhead override if source has one
+                src_oh = client()["overhead_monthly"].get(copy_from)
+                if src_oh is not None:
+                    client()["overhead_monthly"][m] = copy.deepcopy(src_oh)
             targets_str = ", ".join(selected_targets)
-            st.success(f"✅ Copied **{copy_from}** → {targets_str}")
+            n_blocks = len(client()["blocks"][copy_from])
+            cola_note = " COLA schedules follow block positions." if client()["cola_configs"] else ""
+            st.success(f"✅ Copied **{copy_from}** ({n_blocks} blocks) → {targets_str}.{cola_note}")
             st.rerun()
     with info_col:
         if selected_targets:
@@ -1032,9 +1045,11 @@ for i, b in enumerate(blocks):
     shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
     fx     = b["fx_override"]     if b.get("fx_override")     is not None else g_fx
     hours  = b["hours_override"]  if b.get("hours_override")  is not None else g_hours
-    hc, salary     = b.get("hc",0), b.get("salary",0)
+    base_hc        = b.get("hc", 0)
+    hc             = effective_hc(active, b)             # ramp-adjusted HC for display
+    salary         = b.get("salary", 0)
     base_up        = b.get("unit_price", 0)
-    up             = effective_up(active, i, base_up)   # COLA-adjusted
+    up             = effective_up(active, i, base_up)    # COLA-adjusted
     eff            = hours * (1 - shrink)
     rev_eur        = hc * eff * up
     rev_try        = rev_eur * fx
@@ -1194,6 +1209,59 @@ for i, b in enumerate(blocks):
             "attrition_override": float(att_raw) if att_raw.strip() else None,
         })
 
+        # ── HC Ramp Schedule ─────────────────────────────────
+        ramp = blocks[i].get("hc_ramp", {})
+        has_ramp = any(ramp.get(m) is not None for m in MONTHS)
+        with st.expander(f"📈 HC Ramp Schedule {'(active)' if has_ramp else '(optional)'}", expanded=has_ramp):
+            st.caption(f"Override HC per month. Blank = use base HC ({new_hc}). "
+                       f"Useful for new contract ramp-ups or planned reductions.")
+            rc = st.columns(12)
+            new_ramp = {}
+            for mi, m in enumerate(MONTHS):
+                with rc[mi]:
+                    cur = ramp.get(m)
+                    eff = effective_hc(m, blocks[i])
+                    v = rc[mi].number_input(
+                        m, value=int(cur) if cur is not None else new_hc,
+                        min_value=0, step=1,
+                        key=f"ramp_{active}_{i}_{m}",
+                        help=f"Effective HC in {m}"
+                    )
+                    # Only store if different from base HC
+                    if v != new_hc:
+                        new_ramp[m] = v
+            blocks[i]["hc_ramp"] = new_ramp if new_ramp else {}
+
+            # Ramp preview chart
+            if has_ramp or new_ramp:
+                try:
+                    import plotly.graph_objects as _rgo
+                    ramp_hcs = [int(new_ramp.get(m, new_hc)) for m in MONTHS]
+                    fig_ramp = _rgo.Figure()
+                    fig_ramp.add_trace(_rgo.Bar(
+                        x=MONTHS, y=ramp_hcs,
+                        marker_color=["#3b82f6" if v == new_hc else "#f59e0b" for v in ramp_hcs],
+                        text=ramp_hcs, textposition="outside", textfont=dict(size=9),
+                    ))
+                    fig_ramp.add_hline(y=new_hc, line_dash="dot", line_color="#5a6480",
+                                       annotation_text=f"Base HC: {new_hc}",
+                                       annotation_font_color="#5a6480")
+                    fig_ramp.update_layout(
+                        height=200, margin=dict(l=0, r=0, t=20, b=0),
+                        plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+                        font=dict(color="#8b96b0", size=10),
+                        xaxis=dict(showgrid=False),
+                        yaxis=dict(showgrid=True, gridcolor="#1e2535"),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_ramp, use_container_width=True)
+                except ImportError:
+                    pass
+
+            if st.button("🔄 Reset ramp to flat", key=f"ramp_reset_{active}_{i}"):
+                blocks[i]["hc_ramp"] = {}
+                st.rerun()
+
 if blocks_to_delete:
     for idx in sorted(blocks_to_delete, reverse=True):
         blocks.pop(idx)
@@ -1287,16 +1355,23 @@ for col, (role, meta) in zip(oh_cols, ROLE_META.items()):
             f"<b style='color:#ef4444'>€{cost_eur:,.0f}</b></div>"
             f"</div>", unsafe_allow_html=True
         )
-        # Save back — if editing global, write to global; if monthly override, write there
-        oh_data[role]["salary"]      = new_sal
-        oh_data[role]["ratio"]       = new_ratio
-        oh_data[role]["hc_override"] = float(hc_hired) if override_raw.strip() else None
-        # If user changed anything and this was global, promote to per-month override
-        # so other months stay untouched
-        if client()["overhead_monthly"].get(active) is None:
-            import copy as _copy
-            client()["overhead_monthly"][active] = _copy.deepcopy(client()["overhead_global"])
-        client()["overhead_monthly"][active][role] = oh_data[role]
+        # Detect if user changed anything vs stored global
+        stored     = client()["overhead_global"].get(role, {})
+        hc_new     = float(hc_hired) if override_raw.strip() else None
+        changed    = (new_sal   != stored.get("salary",   meta["default_sal"])  or
+                      new_ratio != stored.get("ratio",    meta["default_ratio"]) or
+                      hc_new    != stored.get("hc_override"))
+
+        if changed:
+            # Write to global so all months reflect the change
+            client()["overhead_global"][role] = {
+                "salary": new_sal, "ratio": new_ratio, "hc_override": hc_new
+            }
+            # If this month had a per-month override, update that too
+            if client()["overhead_monthly"].get(active) is not None:
+                client()["overhead_monthly"][active][role] = {
+                    "salary": new_sal, "ratio": new_ratio, "hc_override": hc_new
+                }
 
 # Overhead summary bar
 oh_now = calc_overhead(active, prod_hc_now, g)
@@ -1598,6 +1673,10 @@ try:
     from plotly.subplots import make_subplots
 
     chart_months = MONTHS
+    # Guard: month_data may be empty if no blocks configured
+    if not month_data or all(month_data[m]["hc"] == 0 for m in MONTHS):
+        st.info("Add production blocks to see charts.", icon="📊")
+        raise ImportError("no data")  # skip chart rendering gracefully
     revs   = [month_data[m]["rev"]    for m in chart_months]
     costs  = [month_data[m]["cost"]   for m in chart_months]
     gms    = [month_data[m]["margin"] for m in chart_months]
@@ -1705,6 +1784,42 @@ try:
                         font=dict(color="#e8edf5")),
     )
     st.plotly_chart(fig2, use_container_width=True)
+
+    # ── HC Ramp overview chart ───────────────────────────────
+    any_ramp = any(
+        any(b.get("hc_ramp") for b in client()["blocks"].get(m, []))
+        for m in MONTHS
+    )
+    if any_ramp:
+        st.markdown("#### 👥 HC Ramp Overview")
+        all_blocks_labels = []
+        for m_blks in client()["blocks"].values():
+            for b in m_blks:
+                lbl = b.get("lang") or "Block"
+                if lbl not in all_blocks_labels:
+                    all_blocks_labels.append(lbl)
+
+        fig_hc = go.Figure()
+        # Total HC per month (all blocks combined, ramp-adjusted)
+        total_hcs = [sum(effective_hc(m, b) for b in client()["blocks"].get(m, [])) for m in MONTHS]
+        fig_hc.add_trace(go.Scatter(
+            name="Total HC", x=MONTHS, y=total_hcs,
+            mode="lines+markers+text",
+            line=dict(color="#3b82f6", width=2.5),
+            marker=dict(size=7, color="#3b82f6"),
+            text=total_hcs, textposition="top center", textfont=dict(size=9),
+            fill="tozeroy", fillcolor="rgba(59,130,246,0.06)",
+        ))
+        fig_hc.update_layout(
+            plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+            font=dict(color="#8b96b0"),
+            margin=dict(l=10, r=10, t=20, b=10), height=260,
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor="#1e2535", title=""),
+            showlegend=False,
+            hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347"),
+        )
+        st.plotly_chart(fig_hc, use_container_width=True)
 
 except ImportError:
     st.info("Install plotly for charts: `pip install plotly`")
