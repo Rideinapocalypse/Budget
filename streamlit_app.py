@@ -96,29 +96,75 @@ def fetch_live_fx():
 
 @st.cache_data(ttl=3600)
 def fetch_fx_history():
-    """Fetch 180 days of EUR/TRY and USD/TRY from open.er-api.com timeseries."""
+    """Fetch monthly EUR/TRY and USD/TRY snapshots using open.er-api.com.
+    Fetches current rates for EUR and USD bases, builds 6 monthly data points
+    by fetching each month's snapshot. Falls back to weekly points from today backwards."""
     import datetime as _dt2
     today   = _dt2.date.today()
     results = {"dates": [], "EUR_TRY": [], "USD_TRY": []}
     try:
-        # Fetch last 6 months day by day is too many calls —
-        # use frankfurter.app which supports date ranges natively
-        start = (today - _dt2.timedelta(days=180)).isoformat()
-        end   = today.isoformat()
-        url   = f"https://api.frankfurter.app/{start}..{end}?from=TRY&to=EUR,USD"
-        with urllib.request.urlopen(url, timeout=8) as r:
-            data = json.loads(r.read())
-        # data["rates"] = {"2025-01-02": {"EUR": 0.0263, "USD": 0.0288}, ...}
-        for date_str in sorted(data["rates"].keys()):
-            rates = data["rates"][date_str]
-            eur_rate = rates.get("EUR")
-            usd_rate = rates.get("USD")
-            if eur_rate and usd_rate:
-                results["dates"].append(date_str)
-                results["EUR_TRY"].append(round(1 / eur_rate, 4))  # invert: TRY per EUR
-                results["USD_TRY"].append(round(1 / usd_rate, 4))  # invert: TRY per USD
-        return results, True
-    except Exception as e:
+        # Strategy: fetch current EUR rates (gives USD/EUR cross too)
+        # Then build 6 monthly labels with the live rate as the anchor
+        # and use open.er-api historical endpoint (YYYY-MM-DD supported)
+        points = []
+        for months_back in range(5, -1, -1):  # 5 months ago → today
+            # First day of each month
+            mo = (today.month - months_back - 1) % 12 + 1
+            yr = today.year - ((today.month - months_back - 1) // 12 + (1 if months_back >= today.month else 0))
+            # Simpler: subtract months properly
+            import calendar as _cal2
+            d = today.replace(day=1)
+            for _ in range(months_back):
+                d = (d.replace(day=1) - _dt2.timedelta(days=1)).replace(day=1)
+            points.append(d.isoformat())
+
+        for date_str in points:
+            url = f"https://open.er-api.com/v6/latest/EUR"
+            # Use the historical date endpoint if not today
+            if date_str != today.isoformat():
+                url = f"https://open.er-api.com/v6/{date_str}/EUR"
+            try:
+                with urllib.request.urlopen(url, timeout=6) as r:
+                    data = json.loads(r.read())
+                eur_try = data.get("rates", {}).get("TRY")
+                usd_eur = data.get("rates", {}).get("USD")
+                if eur_try and usd_eur:
+                    usd_try = round(eur_try / usd_eur, 4)
+                    results["dates"].append(date_str[:7])   # YYYY-MM label
+                    results["EUR_TRY"].append(round(eur_try, 2))
+                    results["USD_TRY"].append(round(usd_try, 2))
+            except Exception:
+                continue
+
+        # MTD: also fetch weekly points within current month
+        results["mtd_dates"]   = []
+        results["mtd_EUR_TRY"] = []
+        results["mtd_USD_TRY"] = []
+        mtd_start = today.replace(day=1)
+        d = mtd_start
+        while d <= today:
+            date_str = d.isoformat()
+            url = f"https://open.er-api.com/v6/{date_str}/EUR" if d < today else "https://open.er-api.com/v6/latest/EUR"
+            try:
+                with urllib.request.urlopen(url, timeout=6) as r:
+                    data = json.loads(r.read())
+                eur_try = data.get("rates", {}).get("TRY")
+                usd_eur = data.get("rates", {}).get("USD")
+                if eur_try and usd_eur:
+                    results["mtd_dates"].append(date_str)
+                    results["mtd_EUR_TRY"].append(round(eur_try, 2))
+                    results["mtd_USD_TRY"].append(round(eur_try / usd_eur, 2))
+            except Exception:
+                pass
+            # Step weekly to avoid too many calls, but always include today
+            next_d = d + _dt2.timedelta(days=7)
+            if next_d > today and d < today:
+                d = today
+            else:
+                d = next_d
+
+        return results, True if results["dates"] else False
+    except Exception:
         return results, False
 
 def fmt_eur(v): return f"€{v:,.0f}"
@@ -1712,11 +1758,10 @@ else:
     eur_try_6m  = fx_data["EUR_TRY"]
     usd_try_6m  = fx_data["USD_TRY"]
 
-    # MTD slice
-    mtd_idx    = [i for i, d in enumerate(dates_6m) if d >= mtd_start]
-    dates_mtd  = [dates_6m[i]   for i in mtd_idx]
-    eur_mtd    = [eur_try_6m[i] for i in mtd_idx]
-    usd_mtd    = [usd_try_6m[i] for i in mtd_idx]
+    # MTD: use dedicated weekly data fetched in history function
+    dates_mtd = fx_data.get("mtd_dates",   [])
+    eur_mtd   = fx_data.get("mtd_EUR_TRY", [])
+    usd_mtd   = fx_data.get("mtd_USD_TRY", [])
 
     def make_fx_fig(dates, eur, usd, title):
         fig = _fxgo.Figure()
