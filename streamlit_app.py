@@ -51,11 +51,20 @@ def _default_client(name="Client A"):
             "OM": {"ratio": 50, "hc_override": None, "salary": 80000},
         },
         overhead_monthly={m: None for m in MONTHS},
-        opex={"training_cost_per_hire": 5000},  # TRY per backfill hire
+        opex={"training_cost_per_hire": 5000},
+        # Actuals: {month: {rev, cost, hc, hrs_billable, margin}}
+        actuals={m: {} for m in MONTHS},
     )
 
 if "clients" not in st.session_state:
     st.session_state.clients = [_default_client("Client A")]
+for _cl in st.session_state.clients:
+    if "actuals" not in _cl:
+        _cl["actuals"] = {m: {} for m in MONTHS}
+# Migrate existing clients that don't have actuals
+for _cl in st.session_state.clients:
+    if "actuals" not in _cl:
+        _cl["actuals"] = {m: {} for m in MONTHS}
 if "active_client" not in st.session_state:
     st.session_state.active_client = 0
 if "active_month" not in st.session_state:
@@ -144,13 +153,18 @@ def get_totals(month, g):
         weighted_fx  += hc * fx
         weighted_hrs += hc * eff
 
-    # Per-block or global attrition rate
-    att_rate   = st.session_state.attrition_rate
-    bf_eff     = st.session_state.backfill_efficiency  # e.g. 0.50 = 50% productive
-
-    # Exact fractional attrition & backfill
-    attrition_hc = total_hc * att_rate          # e.g. 8 × 5% = 0.4
-    backfill_hc  = attrition_hc                  # 1-for-1 replacement
+    # Per-block weighted attrition (each block can have own rate, weighted by HC)
+    bf_eff = st.session_state.backfill_efficiency
+    weighted_att = 0.0
+    for b in cl["blocks"].get(month, []):
+        hc_b = b.get("hc", 0)
+        raw  = b.get("attrition_override")
+        rate = raw if raw is not None else st.session_state.attrition_rate
+        rate = max(0.0, min(1.0, rate if rate <= 1 else rate / 100))
+        weighted_att += hc_b * rate
+    att_rate     = (weighted_att / total_hc) if total_hc else st.session_state.attrition_rate
+    attrition_hc = weighted_att               # sum of each block's attrition
+    backfill_hc  = attrition_hc
     net_hc       = total_hc - attrition_hc
 
     # Weighted averages for backfill costing
@@ -472,10 +486,10 @@ def build_export(g):
     ri2 = 3
     for m in MONTHS:
         for blk_i, b in enumerate(client()["blocks"].get(m, [])):
-            raw_shrink = b.get("shrink_override") or g["shrink"]
+            raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
             shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
-            fx     = b.get("fx_override")    or g["fx"]
-            hours  = b.get("hours_override") or g["hours"]
+            fx     = b["fx_override"]    if b.get("fx_override")    is not None else g["fx"]
+            hours  = b["hours_override"] if b.get("hours_override") is not None else g["hours"]
             hc, sal = b.get("hc",0), b.get("salary",0)
             base_up = b.get("unit_price",0)
             eff_up  = effective_up(m, blk_i, base_up)
@@ -664,6 +678,46 @@ def build_pdf(g):
         ts.append(("TEXTCOLOR", (8,r), (8,r), mg_c))
     pl_tbl.setStyle(TableStyle(ts))
     story.append(pl_tbl)
+
+    # ── Actuals vs Budget table (if any actuals entered) ────
+    has_act = any(bool(client()["actuals"].get(m,{}).get("rev") or
+                       client()["actuals"].get(m,{}).get("cost")) for m in MONTHS)
+    if has_act:
+        story.append(Paragraph("Actual vs Budget", h2_style))
+        story.append(HRFlowable(width="100%", color=NAVY, thickness=0.5, spaceAfter=6))
+        avb_hdr = ["Month","Bgt Rev","Act Rev","Rev Var","Bgt GM","Act GM","GM Var"]
+        avb_pdf = [avb_hdr]
+        for m in MONTHS:
+            mt  = all_totals[MONTHS.index(m)]
+            act = client()["actuals"].get(m, {})
+            if not (act.get("rev") or act.get("cost")): continue
+            a_rev = act.get("rev",0); a_gm = act.get("margin", a_rev - act.get("cost",0))
+            rv = a_rev - mt["rev"]; gv = a_gm - mt["margin"]
+            avb_pdf.append([
+                m,
+                f"€{mt['rev']:,.0f}", f"€{a_rev:,.0f}",
+                f"{'+' if rv>=0 else ''}€{rv:,.0f}",
+                f"€{mt['margin']:,.0f}", f"€{a_gm:,.0f}",
+                f"{'+' if gv>=0 else ''}€{gv:,.0f}",
+            ])
+        avb_tbl = Table(avb_pdf, colWidths=[1.5*cm,2.2*cm,2.2*cm,2.2*cm,2.2*cm,2.2*cm,2.2*cm], repeatRows=1)
+        avb_ts = [
+            ("BACKGROUND",(0,0),(-1,0), NAVY), ("TEXTCOLOR",(0,0),(-1,0), LIGHT),
+            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"), ("FONTSIZE",(0,0),(-1,-1), 7.5),
+            ("ALIGN",(1,0),(-1,-1),"RIGHT"), ("ALIGN",(0,0),(0,-1),"LEFT"),
+            ("GRID",(0,0),(-1,-1), 0.3, colors.HexColor("#2a3347")),
+            ("TOPPADDING",(0,0),(-1,-1), 4), ("BOTTOMPADDING",(0,0),(-1,-1), 4),
+        ]
+        for r in range(1, len(avb_pdf)):
+            bg = ROW_A if r % 2 == 1 else ROW_B
+            avb_ts += [("BACKGROUND",(0,r),(-1,r), bg), ("TEXTCOLOR",(0,r),(-1,r), LIGHT)]
+            rv_val = avb_pdf[r][3]
+            gv_val = avb_pdf[r][6]
+            avb_ts.append(("TEXTCOLOR",(3,r),(3,r), GREEN if rv_val.startswith("+") else RED))
+            avb_ts.append(("TEXTCOLOR",(6,r),(6,r), GREEN if gv_val.startswith("+") else RED))
+        avb_tbl.setStyle(TableStyle(avb_ts))
+        story.append(avb_tbl)
+        story.append(Spacer(1, 14))
 
     # ── Footer ───────────────────────────────────────────────
     story.append(Spacer(1, 18))
@@ -989,9 +1043,14 @@ for i, b in enumerate(blocks):
     margin         = rev_eur - cost_e
     margin_try     = rev_try - cost_try_total
     label  = b.get("lang") or f"Block #{i+1}"
-    title  = f"Block #{i+1} — {label} | HC: {hc} | Rev: {fmt_eur(rev_eur)} ({fmt_try(rev_try)}) | Margin: {fmt_eur(margin)}"
+    warn   = " ⚠️" if (hc == 0 or salary == 0) else ""
+    title  = f"Block #{i+1} — {label}{warn} | HC: {hc} | Rev: {fmt_eur(rev_eur)} ({fmt_try(rev_try)}) | Margin: {fmt_eur(margin)}"
 
     with st.expander(title, expanded=True):
+        if hc == 0:
+            st.warning("⚠️ HC is 0 — this block contributes no revenue or cost.", icon="⚠️")
+        if salary == 0 and hc > 0:
+            st.warning("⚠️ Base salary is 0 — cost will be understated.", icon="⚠️")
         r1c1,r1c2,r1c3,r1c4,r1c5 = st.columns([2,1,2,2,1])
         new_lang = r1c1.text_input("Language / Label", value=b.get("lang",""),
                                     key=f"lang_{active}_{i}", placeholder="e.g. DE, EN, TR")
@@ -1428,6 +1487,276 @@ with tab_eur:
     st.dataframe(pd.DataFrame(pnl_eur).set_index("Line Item"), use_container_width=True)
 with tab_try:
     st.dataframe(pd.DataFrame(pnl_try).set_index("Line Item"), use_container_width=True)
+
+# ── Actual vs Budget ─────────────────────────────────────────
+st.divider()
+st.markdown("### 📋 Actual vs Budget")
+st.caption("Enter monthly actuals to track variance against your budget. All figures in EUR.")
+
+avb_expand = st.expander("✏️ Enter / Edit Actuals", expanded=False)
+with avb_expand:
+    act_cols = st.columns(6)
+    avb_months_row1 = MONTHS[:6]
+    avb_months_row2 = MONTHS[6:]
+
+    for row_months in [avb_months_row1, avb_months_row2]:
+        cols = st.columns(6)
+        for col, m in zip(cols, row_months):
+            act = client()["actuals"].get(m, {})
+            with col:
+                st.markdown(f"**{m}**")
+                a_rev  = st.number_input(f"Revenue €",  value=float(act.get("rev",0)),
+                                          step=100.0, min_value=0.0, key=f"act_rev_{m}",
+                                          label_visibility="collapsed" if m != MONTHS[0] else "visible")
+                a_cost = st.number_input(f"Cost €",     value=float(act.get("cost",0)),
+                                          step=100.0, min_value=0.0, key=f"act_cost_{m}",
+                                          label_visibility="collapsed" if m != MONTHS[0] else "visible")
+                a_hc   = st.number_input(f"HC",         value=int(act.get("hc",0)),
+                                          step=1,     min_value=0,   key=f"act_hc_{m}",
+                                          label_visibility="collapsed" if m != MONTHS[0] else "visible")
+                client()["actuals"][m] = {
+                    "rev":  a_rev,
+                    "cost": a_cost,
+                    "hc":   a_hc,
+                    "margin": a_rev - a_cost,
+                }
+
+# Build AVB comparison table
+avb_rows = []
+AVB_COLS = ["Month", "Bgt Rev", "Act Rev", "Rev Var", "Var%",
+            "Bgt Cost", "Act Cost", "Cost Var",
+            "Bgt GM", "Act GM", "GM Var", "GM Var%",
+            "Bgt HC", "Act HC"]
+
+fy_bgt = {"rev":0,"cost":0,"margin":0,"hc":0}
+fy_act = {"rev":0,"cost":0,"margin":0,"hc":0}
+
+for m in MONTHS:
+    mt  = month_data[m]
+    act = client()["actuals"].get(m, {})
+    has_actual = bool(act.get("rev") or act.get("cost") or act.get("hc"))
+
+    b_rev  = mt["rev"];    a_rev  = act.get("rev",0)
+    b_cost = mt["cost"];   a_cost = act.get("cost",0)
+    b_gm   = mt["margin"]; a_gm   = act.get("margin", a_rev - a_cost)
+    b_hc   = mt["hc"];     a_hc   = act.get("hc",0)
+
+    rev_var  = a_rev  - b_rev  if has_actual else None
+    cost_var = a_cost - b_cost if has_actual else None
+    gm_var   = a_gm   - b_gm  if has_actual else None
+    rev_var_pct = (rev_var / b_rev * 100) if (has_actual and b_rev) else None
+    gm_var_pct  = (gm_var  / b_gm  * 100) if (has_actual and b_gm)  else None
+
+    avb_rows.append({
+        "Month": m,
+        "Bgt Rev":  fmt_eur(b_rev),
+        "Act Rev":  fmt_eur(a_rev)  if has_actual else "—",
+        "Rev Var":  (f"+{fmt_eur(rev_var)}" if rev_var >= 0 else fmt_eur(rev_var)) if rev_var is not None else "—",
+        "Var%":     (f"+{rev_var_pct:.1f}%" if rev_var_pct >= 0 else f"{rev_var_pct:.1f}%") if rev_var_pct is not None else "—",
+        "Bgt Cost": fmt_eur(b_cost),
+        "Act Cost": fmt_eur(a_cost) if has_actual else "—",
+        "Cost Var": (f"+{fmt_eur(cost_var)}" if cost_var >= 0 else fmt_eur(cost_var)) if cost_var is not None else "—",
+        "Bgt GM":   fmt_eur(b_gm),
+        "Act GM":   fmt_eur(a_gm)  if has_actual else "—",
+        "GM Var":   (f"+{fmt_eur(gm_var)}" if gm_var >= 0 else fmt_eur(gm_var)) if gm_var is not None else "—",
+        "GM Var%":  (f"+{gm_var_pct:.1f}%" if gm_var_pct >= 0 else f"{gm_var_pct:.1f}%") if gm_var_pct is not None else "—",
+        "Bgt HC":   f"{int(b_hc)}",
+        "Act HC":   f"{int(a_hc)}" if has_actual else "—",
+    })
+
+    if has_actual:
+        fy_act["rev"]    += a_rev
+        fy_act["cost"]   += a_cost
+        fy_act["margin"] += a_gm
+        fy_act["hc"]      = max(fy_act["hc"], a_hc)
+    fy_bgt["rev"]    += b_rev
+    fy_bgt["cost"]   += b_cost
+    fy_bgt["margin"] += b_gm
+    fy_bgt["hc"]      = max(fy_bgt["hc"], int(b_hc))
+
+# Colour variance cells
+def colour_var(val_str, positive_is_good=True):
+    if val_str in ("—", ""): return val_str
+    is_pos = val_str.startswith("+")
+    color = "#10b981" if (is_pos == positive_is_good) else "#ef4444"
+    return f'<span style="color:{color};font-weight:600">{val_str}</span>'
+
+# Render table as styled HTML
+has_any_actual = any(bool(client()["actuals"].get(m,{}).get("rev") or
+                          client()["actuals"].get(m,{}).get("cost")) for m in MONTHS)
+
+if has_any_actual:
+    # Summary KPI variance bar
+    months_with_actuals = [m for m in MONTHS if client()["actuals"].get(m,{}).get("rev") or
+                                                client()["actuals"].get(m,{}).get("cost")]
+    bgt_ytd = sum(month_data[m]["rev"]    for m in months_with_actuals)
+    act_ytd = sum(client()["actuals"].get(m,{}).get("rev",0) for m in months_with_actuals)
+    bgm_ytd = sum(month_data[m]["margin"] for m in months_with_actuals)
+    agm_ytd = sum(client()["actuals"].get(m,{}).get("margin",0) for m in months_with_actuals)
+    rev_ytd_var = act_ytd - bgt_ytd
+    gm_ytd_var  = agm_ytd - bgm_ytd
+    rv_color = "#10b981" if rev_ytd_var >= 0 else "#ef4444"
+    gv_color = "#10b981" if gm_ytd_var  >= 0 else "#ef4444"
+    n_months = len(months_with_actuals)
+
+    st.markdown(
+        f"<div style='background:#1e2535;border:1px solid #2a3347;border-radius:6px;"
+        f"padding:10px 20px;margin-bottom:12px;display:flex;gap:40px;align-items:center'>"
+        f"<span style='color:#8b96b0;font-size:12px'>YTD ({n_months} months reported)</span>"
+        f"<span style='color:#e8edf5'>Revenue: <b>{fmt_eur(act_ytd)}</b> vs <b>{fmt_eur(bgt_ytd)}</b> bgt "
+        f"<b style='color:{rv_color}'>({'+' if rev_ytd_var>=0 else ''}{fmt_eur(rev_ytd_var)})</b></span>"
+        f"<span style='color:#e8edf5'>Gross Margin: <b>{fmt_eur(agm_ytd)}</b> vs <b>{fmt_eur(bgm_ytd)}</b> bgt "
+        f"<b style='color:{gv_color}'>({'+' if gm_ytd_var>=0 else ''}{fmt_eur(gm_ytd_var)})</b></span>"
+        f"</div>", unsafe_allow_html=True
+    )
+
+    df_avb = pd.DataFrame(avb_rows).set_index("Month")
+    st.dataframe(df_avb, use_container_width=True)
+
+    # Waterfall-style variance chart
+    try:
+        import plotly.graph_objects as go_avb
+        months_act  = [r["Month"] for r in avb_rows if r["Act Rev"] != "—"]
+        rev_vars_ch = [client()["actuals"].get(m,{}).get("rev",0) - month_data[m]["rev"]
+                       for m in months_act]
+        gm_vars_ch  = [client()["actuals"].get(m,{}).get("margin",0) - month_data[m]["margin"]
+                       for m in months_act]
+        fig_avb = go_avb.Figure()
+        fig_avb.add_trace(go_avb.Bar(
+            name="Revenue Variance",
+            x=months_act, y=rev_vars_ch,
+            marker_color=["#10b981" if v >= 0 else "#ef4444" for v in rev_vars_ch],
+            text=[f"{'+' if v>=0 else ''}€{v:,.0f}" for v in rev_vars_ch],
+            textposition="outside", textfont=dict(size=10),
+        ))
+        fig_avb.add_trace(go_avb.Bar(
+            name="GM Variance",
+            x=months_act, y=gm_vars_ch,
+            marker_color=["#3b82f6" if v >= 0 else "#f59e0b" for v in gm_vars_ch],
+            text=[f"{'+' if v>=0 else ''}€{v:,.0f}" for v in gm_vars_ch],
+            textposition="outside", textfont=dict(size=10),
+        ))
+        fig_avb.add_hline(y=0, line_color="#2a3347", line_width=1.5)
+        fig_avb.update_layout(
+            title=dict(text="Actual vs Budget Variance (EUR)", font=dict(color="#e8edf5", size=13)),
+            barmode="group", bargap=0.2,
+            plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+            font=dict(color="#8b96b0"),
+            legend=dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)"),
+            margin=dict(l=10, r=10, t=50, b=10), height=340,
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor="#1e2535", tickprefix="€", zeroline=False),
+            hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347", font=dict(color="#e8edf5")),
+        )
+        st.plotly_chart(fig_avb, use_container_width=True)
+    except ImportError:
+        pass
+else:
+    st.info("No actuals entered yet. Use '✏️ Enter / Edit Actuals' above to start tracking.", icon="ℹ️")
+
+# ── Actual vs Budget ─────────────────────────────────────────
+st.divider()
+st.markdown("### 📋 Actual vs Budget")
+st.caption("Enter monthly actuals to track variance against your budget. All figures in EUR.")
+
+with st.expander("✏️ Enter / Edit Actuals", expanded=False):
+    for row_months in [MONTHS[:6], MONTHS[6:]]:
+        cols = st.columns(6)
+        for col, m in zip(cols, row_months):
+            act = client()["actuals"].get(m, {})
+            with col:
+                st.markdown(f"**{m}**")
+                a_rev  = st.number_input(f"Rev €",  value=float(act.get("rev",0)),  step=100.0, min_value=0.0, key=f"act_rev_{m}")
+                a_cost = st.number_input(f"Cost €", value=float(act.get("cost",0)), step=100.0, min_value=0.0, key=f"act_cost_{m}")
+                a_hc   = st.number_input(f"HC",     value=int(act.get("hc",0)),     step=1,     min_value=0,   key=f"act_hc_{m}")
+                client()["actuals"][m] = {"rev": a_rev, "cost": a_cost, "hc": a_hc, "margin": a_rev - a_cost}
+
+has_any_actual = any(bool(client()["actuals"].get(m,{}).get("rev") or
+                          client()["actuals"].get(m,{}).get("cost")) for m in MONTHS)
+
+if has_any_actual:
+    months_with_actuals = [m for m in MONTHS if client()["actuals"].get(m,{}).get("rev") or
+                                                client()["actuals"].get(m,{}).get("cost")]
+    bgt_ytd = sum(month_data[m]["rev"]    for m in months_with_actuals)
+    act_ytd = sum(client()["actuals"].get(m,{}).get("rev",0) for m in months_with_actuals)
+    bgm_ytd = sum(month_data[m]["margin"] for m in months_with_actuals)
+    agm_ytd = sum(client()["actuals"].get(m,{}).get("margin",0) for m in months_with_actuals)
+    rev_ytd_var = act_ytd - bgt_ytd
+    gm_ytd_var  = agm_ytd - bgm_ytd
+    rv_color = "#10b981" if rev_ytd_var >= 0 else "#ef4444"
+    gv_color = "#10b981" if gm_ytd_var  >= 0 else "#ef4444"
+    n_months = len(months_with_actuals)
+    st.markdown(
+        f"<div style='background:#1e2535;border:1px solid #2a3347;border-radius:6px;"
+        f"padding:10px 20px;margin-bottom:12px;display:flex;gap:40px;align-items:center'>"
+        f"<span style='color:#8b96b0;font-size:12px'>YTD ({n_months} months reported)</span>"
+        f"<span style='color:#e8edf5'>Revenue: <b>{fmt_eur(act_ytd)}</b> vs <b>{fmt_eur(bgt_ytd)}</b> bgt "
+        f"<b style='color:{rv_color}'>({'+' if rev_ytd_var>=0 else ''}{fmt_eur(rev_ytd_var)})</b></span>"
+        f"<span style='color:#e8edf5'>Gross Margin: <b>{fmt_eur(agm_ytd)}</b> vs <b>{fmt_eur(bgm_ytd)}</b> bgt "
+        f"<b style='color:{gv_color}'>({'+' if gm_ytd_var>=0 else ''}{fmt_eur(gm_ytd_var)})</b></span>"
+        f"</div>", unsafe_allow_html=True
+    )
+
+    avb_rows = []
+    for m in MONTHS:
+        mt  = month_data[m]
+        act = client()["actuals"].get(m, {})
+        has_act = bool(act.get("rev") or act.get("cost"))
+        b_rev=mt["rev"]; a_rev=act.get("rev",0)
+        b_gm=mt["margin"]; a_gm=act.get("margin", a_rev - act.get("cost",0))
+        b_cost=mt["cost"]; a_cost=act.get("cost",0)
+        rv = a_rev-b_rev if has_act else None
+        gv = a_gm-b_gm   if has_act else None
+        cv = a_cost-b_cost if has_act else None
+        def fv(v, pos_good=True):
+            if v is None: return "—"
+            s = f"{'+' if v>=0 else ''}€{abs(v):,.0f}" if v>=0 else f"-€{abs(v):,.0f}"
+            return s
+        def fp(v, base):
+            if v is None or not base: return "—"
+            pct = v/base*100
+            return f"{'+' if pct>=0 else ''}{pct:.1f}%"
+        avb_rows.append({
+            "Month":m,
+            "Bgt Rev":fmt_eur(b_rev), "Act Rev":fmt_eur(a_rev) if has_act else "—",
+            "Rev Var":fv(rv), "Rev Var%":fp(rv,b_rev),
+            "Bgt Cost":fmt_eur(b_cost), "Act Cost":fmt_eur(a_cost) if has_act else "—",
+            "Cost Var":fv(cv, pos_good=False),
+            "Bgt GM":fmt_eur(b_gm), "Act GM":fmt_eur(a_gm) if has_act else "—",
+            "GM Var":fv(gv), "GM Var%":fp(gv,b_gm),
+            "Bgt HC":f"{int(mt['hc'])}", "Act HC":f"{int(act.get('hc',0))}" if has_act else "—",
+        })
+    df_avb = pd.DataFrame(avb_rows).set_index("Month")
+    st.dataframe(df_avb, use_container_width=True)
+
+    try:
+        import plotly.graph_objects as _go
+        months_act = [m for m in MONTHS if client()["actuals"].get(m,{}).get("rev") or
+                                           client()["actuals"].get(m,{}).get("cost")]
+        rev_vars_ch = [client()["actuals"].get(m,{}).get("rev",0) - month_data[m]["rev"] for m in months_act]
+        gm_vars_ch  = [client()["actuals"].get(m,{}).get("margin",0) - month_data[m]["margin"] for m in months_act]
+        fig_avb = _go.Figure()
+        fig_avb.add_trace(_go.Bar(name="Revenue Variance", x=months_act, y=rev_vars_ch,
+            marker_color=["#10b981" if v>=0 else "#ef4444" for v in rev_vars_ch],
+            text=[f"{'+' if v>=0 else ''}€{v:,.0f}" for v in rev_vars_ch], textposition="outside", textfont=dict(size=10)))
+        fig_avb.add_trace(_go.Bar(name="GM Variance", x=months_act, y=gm_vars_ch,
+            marker_color=["#3b82f6" if v>=0 else "#f59e0b" for v in gm_vars_ch],
+            text=[f"{'+' if v>=0 else ''}€{v:,.0f}" for v in gm_vars_ch], textposition="outside", textfont=dict(size=10)))
+        fig_avb.add_hline(y=0, line_color="#2a3347", line_width=1.5)
+        fig_avb.update_layout(
+            title=dict(text="Actual vs Budget Variance (EUR)", font=dict(color="#e8edf5", size=13)),
+            barmode="group", bargap=0.2, plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+            font=dict(color="#8b96b0"), legend=dict(orientation="h", y=1.08, bgcolor="rgba(0,0,0,0)"),
+            margin=dict(l=10, r=10, t=50, b=10), height=340,
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor="#1e2535", tickprefix="€", zeroline=False),
+            hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347", font=dict(color="#e8edf5")),
+        )
+        st.plotly_chart(fig_avb, use_container_width=True)
+    except ImportError:
+        pass
+else:
+    st.info("No actuals entered yet. Use '✏️ Enter / Edit Actuals' above to start tracking.", icon="ℹ️")
 
 # ── Charts ───────────────────────────────────────────────────
 st.divider()
