@@ -94,6 +94,33 @@ def fetch_live_fx():
     except Exception:
         return 38.0, False
 
+@st.cache_data(ttl=3600)
+def fetch_fx_history():
+    """Fetch 180 days of EUR/TRY and USD/TRY from open.er-api.com timeseries."""
+    import datetime as _dt2
+    today   = _dt2.date.today()
+    results = {"dates": [], "EUR_TRY": [], "USD_TRY": []}
+    try:
+        # Fetch last 6 months day by day is too many calls —
+        # use frankfurter.app which supports date ranges natively
+        start = (today - _dt2.timedelta(days=180)).isoformat()
+        end   = today.isoformat()
+        url   = f"https://api.frankfurter.app/{start}..{end}?from=TRY&to=EUR,USD"
+        with urllib.request.urlopen(url, timeout=8) as r:
+            data = json.loads(r.read())
+        # data["rates"] = {"2025-01-02": {"EUR": 0.0263, "USD": 0.0288}, ...}
+        for date_str in sorted(data["rates"].keys()):
+            rates = data["rates"][date_str]
+            eur_rate = rates.get("EUR")
+            usd_rate = rates.get("USD")
+            if eur_rate and usd_rate:
+                results["dates"].append(date_str)
+                results["EUR_TRY"].append(round(1 / eur_rate, 4))  # invert: TRY per EUR
+                results["USD_TRY"].append(round(1 / usd_rate, 4))  # invert: TRY per USD
+        return results, True
+    except Exception as e:
+        return results, False
+
 def fmt_eur(v): return f"€{v:,.0f}"
 def fmt_try(v): return f"₺{v:,.0f}"
 def fmt_pct(v): return f"{v*100:.1f}%"
@@ -1663,6 +1690,103 @@ if has_any_actual:
         pass
 else:
     st.info("No actuals entered yet. Use '✏️ Enter / Edit Actuals' above to start tracking.", icon="ℹ️")
+
+# ── FX Rate Chart ────────────────────────────────────────────
+st.divider()
+st.markdown("### 💱 FX Rate — EUR/TRY & USD/TRY")
+
+fx_tab1, fx_tab2 = st.tabs(["📅 Last 6 Months", "📆 Month to Date"])
+
+fx_data, fx_loaded = fetch_fx_history()
+
+if not fx_loaded or not fx_data["dates"]:
+    st.warning("Could not fetch FX history. Check your connection.", icon="🔴")
+else:
+    import plotly.graph_objects as _fxgo
+    import datetime as _dt3
+
+    today     = _dt3.date.today()
+    mtd_start = today.replace(day=1).isoformat()
+
+    dates_6m    = fx_data["dates"]
+    eur_try_6m  = fx_data["EUR_TRY"]
+    usd_try_6m  = fx_data["USD_TRY"]
+
+    # MTD slice
+    mtd_idx    = [i for i, d in enumerate(dates_6m) if d >= mtd_start]
+    dates_mtd  = [dates_6m[i]   for i in mtd_idx]
+    eur_mtd    = [eur_try_6m[i] for i in mtd_idx]
+    usd_mtd    = [usd_try_6m[i] for i in mtd_idx]
+
+    def make_fx_fig(dates, eur, usd, title):
+        fig = _fxgo.Figure()
+        fig.add_trace(_fxgo.Scatter(
+            name="EUR/TRY", x=dates, y=eur,
+            mode="lines", line=dict(color="#3b82f6", width=2.5),
+            fill="tozeroy", fillcolor="rgba(59,130,246,0.06)",
+            hovertemplate="%{x}<br>€1 = ₺%{y:,.2f}<extra></extra>",
+        ))
+        fig.add_trace(_fxgo.Scatter(
+            name="USD/TRY", x=dates, y=usd,
+            mode="lines", line=dict(color="#f59e0b", width=2),
+            hovertemplate="%{x}<br>$1 = ₺%{y:,.2f}<extra></extra>",
+        ))
+        # Annotate latest values
+        if eur:
+            fig.add_annotation(x=dates[-1], y=eur[-1],
+                text=f"€ ₺{eur[-1]:,.2f}", showarrow=False,
+                font=dict(color="#3b82f6", size=11),
+                xanchor="left", yanchor="middle", xshift=8)
+        if usd:
+            fig.add_annotation(x=dates[-1], y=usd[-1],
+                text=f"$ ₺{usd[-1]:,.2f}", showarrow=False,
+                font=dict(color="#f59e0b", size=11),
+                xanchor="left", yanchor="middle", xshift=8)
+        fig.update_layout(
+            plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+            font=dict(color="#8b96b0", family="Inter, sans-serif"),
+            legend=dict(orientation="h", y=1.06, bgcolor="rgba(0,0,0,0)",
+                        font=dict(size=11)),
+            margin=dict(l=10, r=60, t=30, b=10), height=320,
+            xaxis=dict(showgrid=False, tickfont=dict(color="#8b96b0"),
+                       tickangle=-30, nticks=12),
+            yaxis=dict(showgrid=True, gridcolor="#1e2535",
+                       tickprefix="₺", tickfont=dict(color="#8b96b0")),
+            hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347",
+                            font=dict(color="#e8edf5")),
+        )
+        return fig
+
+    with fx_tab1:
+        if eur_try_6m:
+            # 6m stats row
+            eur_min, eur_max = min(eur_try_6m), max(eur_try_6m)
+            eur_chg  = eur_try_6m[-1] - eur_try_6m[0]
+            usd_chg  = usd_try_6m[-1] - usd_try_6m[0]
+            s1,s2,s3,s4 = st.columns(4)
+            s1.metric("EUR/TRY Now",  f"₺{eur_try_6m[-1]:,.2f}", f"{eur_chg:+.2f} vs 6m ago")
+            s2.metric("USD/TRY Now",  f"₺{usd_try_6m[-1]:,.2f}", f"{usd_chg:+.2f} vs 6m ago")
+            s3.metric("EUR 6m Range", f"₺{eur_min:,.2f} – ₺{eur_max:,.2f}")
+            s4.metric("EUR volatility", f"₺{eur_max - eur_min:,.2f} spread")
+            st.plotly_chart(make_fx_fig(dates_6m, eur_try_6m, usd_try_6m,
+                            "EUR/TRY & USD/TRY — Last 6 Months"),
+                            use_container_width=True)
+        else:
+            st.info("No 6-month data available.")
+
+    with fx_tab2:
+        if dates_mtd:
+            mtd_eur_chg = eur_mtd[-1] - eur_mtd[0] if len(eur_mtd) > 1 else 0
+            mtd_usd_chg = usd_mtd[-1] - usd_mtd[0] if len(usd_mtd) > 1 else 0
+            t1,t2,t3 = st.columns(3)
+            t1.metric("EUR/TRY MTD",  f"₺{eur_mtd[-1]:,.2f}", f"{mtd_eur_chg:+.2f} MTD")
+            t2.metric("USD/TRY MTD",  f"₺{usd_mtd[-1]:,.2f}", f"{mtd_usd_chg:+.2f} MTD")
+            t3.metric("MTD days",     f"{len(dates_mtd)} trading days")
+            st.plotly_chart(make_fx_fig(dates_mtd, eur_mtd, usd_mtd,
+                            "EUR/TRY & USD/TRY — Month to Date"),
+                            use_container_width=True)
+        else:
+            st.info(f"No MTD data yet for {today.strftime('%B %Y')}.")
 
 # ── Charts ───────────────────────────────────────────────────
 st.divider()
