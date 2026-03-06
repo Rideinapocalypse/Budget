@@ -1838,28 +1838,51 @@ try:
     st.plotly_chart(fig_fx, use_container_width=True)
 
     # Cost impact chart
-    st.markdown("**💸 Cost impact vs budget FX** — how much cheaper/more expensive your EUR cost becomes per scenario")
+    st.markdown("**💸 Extra margin (or loss) from FX movement — vs your budget rate**")
+    st.caption(
+        "Shows how much your EUR cost changes each month compared to what you budgeted, "
+        "purely due to TRY/EUR movement. "
+        "📉 **Negative bar = your costs are CHEAPER in EUR → extra margin in your pocket.** "
+        "📈 Positive bar = TRY strengthened → costs are higher than planned. "
+        "Since you pay salaries in TRY but bill in EUR, a weaker TRY always helps your margin."
+    )
     fig_imp = _fxgo.Figure()
     for scen, color in [("Bear","#ef4444"),("Base","#3b82f6"),("Bull","#10b981")]:
         rows = [r for r in impact_rows if r["Scenario"] == scen]
         deltas = [r["Δ vs Budget"] for r in rows]
         fig_imp.add_trace(_fxgo.Bar(
-            name=f"{'🐻' if scen=='Bear' else '📊' if scen=='Base' else '🐂'} {scen}",
+            name=f"{'🐻 Bear — TRY weakens most' if scen=='Bear' else '📊 Base — moderate depreciation' if scen=='Base' else '🐂 Bull — TRY stays strong'}",
             x=MONTHS, y=deltas,
             marker_color=color,
             opacity=0.85,
-            hovertemplate=f"{scen}<br>%{{x}}: %{{y:+,.0f}} EUR<extra></extra>",
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "FX delta vs budget: <b>%{y:+,.0f} EUR</b><br>"
+                "<i>Negative = cheaper costs = extra margin</i>"
+                "<extra></extra>"
+            ),
         ))
-    fig_imp.add_hline(y=0, line_color="#2a3347", line_width=1.5)
+    fig_imp.add_hline(y=0, line_color="#5a6480", line_width=1,
+                      annotation_text="Budget FX baseline (€0 impact)",
+                      annotation_font_color="#5a6480",
+                      annotation_position="top left")
     fig_imp.update_layout(
         barmode="group", bargap=0.15,
         plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
         font=dict(color="#8b96b0"),
-        legend=dict(orientation="h", y=1.06, bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
-        margin=dict(l=10, r=10, t=30, b=10), height=280,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom", y=1.12,   # push well above bars
+            xanchor="center", x=0.5,
+            bgcolor="rgba(14,20,32,0.8)",
+            bordercolor="#2a3347", borderwidth=1,
+            font=dict(size=11),
+        ),
+        margin=dict(l=10, r=10, t=70, b=10), height=310,  # extra top margin for legend
         xaxis=dict(showgrid=False),
         yaxis=dict(showgrid=True, gridcolor="#1e2535",
-                   tickprefix="€", zeroline=False),
+                   tickprefix="€", zeroline=False,
+                   title=dict(text="Cost delta vs budget", font=dict(size=10, color="#5a6480"))),
         hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347", font=dict(color="#e8edf5")),
     )
     st.plotly_chart(fig_imp, use_container_width=True)
