@@ -96,74 +96,67 @@ def fetch_live_fx():
 
 @st.cache_data(ttl=3600)
 def fetch_fx_history():
-    """Fetch monthly EUR/TRY and USD/TRY snapshots using open.er-api.com.
-    Fetches current rates for EUR and USD bases, builds 6 monthly data points
-    by fetching each month's snapshot. Falls back to weekly points from today backwards."""
+    """Fetch daily EUR/TRY and USD/TRY from ECB SDMX free API (no key needed).
+    Falls back gracefully with an empty result if unavailable."""
     import datetime as _dt2
-    today   = _dt2.date.today()
-    results = {"dates": [], "EUR_TRY": [], "USD_TRY": []}
+    today = _dt2.date.today()
+    start = (today - _dt2.timedelta(days=185)).isoformat()
+    results = {"dates": [], "EUR_TRY": [], "USD_TRY": [],
+               "mtd_dates": [], "mtd_EUR_TRY": [], "mtd_USD_TRY": []}
     try:
-        # Strategy: fetch current EUR rates (gives USD/EUR cross too)
-        # Then build 6 monthly labels with the live rate as the anchor
-        # and use open.er-api historical endpoint (YYYY-MM-DD supported)
-        points = []
-        for months_back in range(5, -1, -1):  # 5 months ago → today
-            # First day of each month
-            mo = (today.month - months_back - 1) % 12 + 1
-            yr = today.year - ((today.month - months_back - 1) // 12 + (1 if months_back >= today.month else 0))
-            # Simpler: subtract months properly
-            import calendar as _cal2
-            d = today.replace(day=1)
-            for _ in range(months_back):
-                d = (d.replace(day=1) - _dt2.timedelta(days=1)).replace(day=1)
-            points.append(d.isoformat())
+        # ECB SDMX REST API — free, no key, daily data
+        # EXR.D.TRY.EUR.SP00.A  = EUR/TRY daily
+        # EXR.D.USD.EUR.SP00.A  = EUR/USD daily  (invert → USD/TRY = EUR/TRY ÷ EUR/USD)
+        url = (
+            f"https://data-api.ecb.europa.eu/service/data/EXR/"
+            f"D.TRY+USD.EUR.SP00.A"
+            f"?startPeriod={start}&format=jsondata&detail=dataonly"
+        )
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = json.loads(r.read())
 
-        for date_str in points:
-            url = f"https://open.er-api.com/v6/latest/EUR"
-            # Use the historical date endpoint if not today
-            if date_str != today.isoformat():
-                url = f"https://open.er-api.com/v6/{date_str}/EUR"
-            try:
-                with urllib.request.urlopen(url, timeout=6) as r:
-                    data = json.loads(r.read())
-                eur_try = data.get("rates", {}).get("TRY")
-                usd_eur = data.get("rates", {}).get("USD")
-                if eur_try and usd_eur:
-                    usd_try = round(eur_try / usd_eur, 4)
-                    results["dates"].append(date_str[:7])   # YYYY-MM label
-                    results["EUR_TRY"].append(round(eur_try, 2))
-                    results["USD_TRY"].append(round(usd_try, 2))
-            except Exception:
-                continue
+        # Parse SDMX-JSON structure
+        structure  = data["structure"]
+        series_dim = structure["dimensions"]["series"]
+        obs_dim    = structure["dimensions"]["observation"][0]  # time
+        dates      = [o["id"] for o in obs_dim["values"]]      # YYYY-MM-DD list
 
-        # MTD: also fetch weekly points within current month
-        results["mtd_dates"]   = []
-        results["mtd_EUR_TRY"] = []
-        results["mtd_USD_TRY"] = []
-        mtd_start = today.replace(day=1)
-        d = mtd_start
-        while d <= today:
-            date_str = d.isoformat()
-            url = f"https://open.er-api.com/v6/{date_str}/EUR" if d < today else "https://open.er-api.com/v6/latest/EUR"
-            try:
-                with urllib.request.urlopen(url, timeout=6) as r:
-                    data = json.loads(r.read())
-                eur_try = data.get("rates", {}).get("TRY")
-                usd_eur = data.get("rates", {}).get("USD")
-                if eur_try and usd_eur:
-                    results["mtd_dates"].append(date_str)
-                    results["mtd_EUR_TRY"].append(round(eur_try, 2))
-                    results["mtd_USD_TRY"].append(round(eur_try / usd_eur, 2))
-            except Exception:
-                pass
-            # Step weekly to avoid too many calls, but always include today
-            next_d = d + _dt2.timedelta(days=7)
-            if next_d > today and d < today:
-                d = today
-            else:
-                d = next_d
+        # Build currency index from series dimension
+        curr_dim = next(d for d in series_dim if d["id"] == "CURRENCY")
+        curr_vals = {v["id"]: i for i, v in enumerate(curr_dim["values"])}
+        try_idx = curr_vals.get("TRY")
+        usd_idx = curr_vals.get("USD")
 
-        return results, True if results["dates"] else False
+        datasets = data["dataSets"][0]["series"]
+
+        def get_series(currency_idx):
+            """Find series key matching currency index and return obs list."""
+            for key, series in datasets.items():
+                parts = key.split(":")
+                if int(parts[curr_dim["keyPosition"]]) == currency_idx:
+                    obs = series.get("observations", {})
+                    return {dates[int(k)]: v[0] for k, v in obs.items() if v[0] is not None}
+            return {}
+
+        try_obs = get_series(try_idx) if try_idx is not None else {}
+        usd_obs = get_series(usd_idx) if usd_idx is not None else {}
+
+        # Build aligned daily series
+        mtd_start = today.replace(day=1).isoformat()
+        for d in sorted(set(try_obs) & set(usd_obs)):
+            eur_try = round(try_obs[d], 2)
+            eur_usd = usd_obs[d]
+            usd_try = round(eur_try / eur_usd, 2) if eur_usd else None
+            if usd_try:
+                results["dates"].append(d)
+                results["EUR_TRY"].append(eur_try)
+                results["USD_TRY"].append(usd_try)
+                if d >= mtd_start:
+                    results["mtd_dates"].append(d)
+                    results["mtd_EUR_TRY"].append(eur_try)
+                    results["mtd_USD_TRY"].append(usd_try)
+
+        return results, bool(results["dates"])
     except Exception:
         return results, False
 
@@ -1746,7 +1739,10 @@ fx_tab1, fx_tab2 = st.tabs(["📅 Last 6 Months", "📆 Month to Date"])
 fx_data, fx_loaded = fetch_fx_history()
 
 if not fx_loaded or not fx_data["dates"]:
-    st.warning("Could not fetch FX history. Check your connection.", icon="🔴")
+    st.warning("Could not fetch FX history from ECB. The chart requires an internet connection.", icon="🔴")
+    if st.button("🔄 Retry", key="fx_retry"):
+        st.cache_data.clear()
+        st.rerun()
 else:
     import plotly.graph_objects as _fxgo
     import datetime as _dt3
@@ -1994,4 +1990,131 @@ except ImportError:
     st.info("Install plotly for charts: `pip install plotly`")
 
 st.divider()
+
+# ── Formula Reference ─────────────────────────────────────────
+with st.expander("📐 Formula Reference — How Calculations Work", expanded=False):
+
+    st.markdown("""
+<style>
+.formula-section { margin-bottom: 24px; }
+.formula-title {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #5a6480;
+    border-bottom: 1px solid #2a3347;
+    padding-bottom: 4px; margin-bottom: 10px;
+}
+.formula-row {
+    display: grid; grid-template-columns: 220px 1fr;
+    gap: 8px; align-items: start;
+    padding: 6px 0; border-bottom: 1px solid #1e2535;
+    font-size: 13px;
+}
+.formula-label { color: #8b96b0; font-weight: 600; }
+.formula-expr  { color: #e8edf5; font-family: monospace; font-size: 12px; }
+.formula-note  { color: #5a6480; font-size: 11px; margin-top: 2px; }
+</style>
+""", unsafe_allow_html=True)
+
+    def section(title):
+        st.markdown(f"<div class='formula-title'>{title}</div>", unsafe_allow_html=True)
+
+    def row(label, expr, note=""):
+        note_html = f"<div class='formula-note'>{note}</div>" if note else ""
+        st.markdown(
+            f"<div class='formula-row'>"
+            f"<div class='formula-label'>{label}</div>"
+            f"<div><div class='formula-expr'>{expr}</div>{note_html}</div>"
+            f"</div>", unsafe_allow_html=True)
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        section("⏱ Hours & Productivity")
+        row("Gross hours / agent",    "hours_per_month",
+            "Global setting. Default 160 hrs/mo.")
+        row("Shrinkage",              "shrink %  (global or per-block override)",
+            "Accounts for breaks, sick leave, training, etc.")
+        row("Effective hours / agent","gross_hours × (1 − shrink)",
+            "Billable productive hours per agent per month.")
+        row("Total billable hours",   "Σ (HC × effective_hrs)  across all blocks",
+            "Sum across all production blocks for the month.")
+        row("COLA-adjusted UP",       "base_UP  if month < COLA date",
+            "Prorated in transition month: (days_old×old_UP + days_new×new_UP) ÷ days_in_month")
+        row("HC ramp",                "hc_ramp[month]  if set,  else block base HC",
+            "Per-block monthly override. Blank = use base HC.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("💰 Revenue")
+        row("Block revenue (EUR)",    "HC × effective_hrs × COLA-adjusted UP",
+            "UP = Unit Price in EUR/hr.")
+        row("Block revenue (TRY)",    "revenue_EUR × FX rate",
+            "FX = global rate or per-block override.")
+        row("Total revenue",          "Σ block revenues across all blocks")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("💸 Production Cost")
+        row("Gross salary cost (TRY)","HC × base_salary × CTC_multiplier × (1 + bonus %)",
+            "CTC = Cost to Company multiplier. Covers employer taxes, insurance, etc.")
+        row("Meal card cost (TRY)",   "HC × meal_card_TRY / month",
+            "Fixed per-head monthly benefit.")
+        row("Total prod cost (TRY)",  "salary_cost + meal_cost")
+        row("Total prod cost (EUR)",  "total_cost_TRY ÷ FX rate")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("🔄 Attrition & Backfill")
+        row("Attrition HC",           "Σ (block_HC × block_attrition_rate)",
+            "Per-block rate if set, otherwise global attrition %.")
+        row("Backfill HC",            "= attrition HC  (1-for-1 replacement)")
+        row("Net HC (EOM)",           "total HC − attrition HC")
+        row("Backfill salary cost",   "backfill_HC × avg_salary × CTC × (1 + bonus%) + backfill_HC × meal",
+            "Backfill agents earn full salary from day 1.")
+        row("Backfill hours",         "backfill_HC × avg_eff_hrs × training_efficiency %",
+            "Partial productivity during onboarding. Hours produced but NOT billed.")
+
+    with col_b:
+        section("🏢 Overhead Roles (TM / QM / OM)")
+        row("Auto HC (exact)",        "prod_HC ÷ span_of_control",
+            "Fractional — used for cost calculation only.")
+        row("Hired HC (ceiling)",     "⌈ prod_HC ÷ span_of_control ⌉",
+            "You hire whole people. math.ceil() applied.")
+        row("Overhead cost (TRY)",    "hired_HC × role_salary × CTC × (1 + bonus%) + hired_HC × meal",
+            "HC override replaces auto-ceil if set.")
+        row("Overhead cost (EUR)",    "overhead_cost_TRY ÷ FX rate")
+        row("Utilisation %",          "(exact HC ÷ hired HC) × 100",
+            "🟢 < 85%  🟡 85-99%  🔴 ≥ 100% (overstretched)")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("📦 OPEX — Training")
+        row("Training cost (TRY)",    "backfill_HC × training_cost_per_hire",
+            "One-time per new backfill agent. Set in sidebar.")
+        row("Training cost (EUR)",    "training_cost_TRY ÷ weighted_avg_FX")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("📊 P&L Aggregates")
+        row("Total cost (EUR)",       "prod_cost + backfill_cost + training_cost + overhead_cost",
+            "All cost lines combined.")
+        row("Gross margin (EUR)",     "revenue − total_cost")
+        row("Margin %",               "(gross_margin ÷ revenue) × 100")
+        row("Break-even price",       "total_cost ÷ total_billable_hours",
+            "Minimum EUR/hr you must charge to cover ALL costs.")
+        row("Avg selling price",      "total_revenue ÷ total_billable_hours",
+            "Blended rate across all blocks.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("📋 Actual vs Budget")
+        row("Revenue variance",       "actual_revenue − budget_revenue")
+        row("Revenue variance %",     "(rev_variance ÷ budget_revenue) × 100")
+        row("GM variance",            "actual_GM − budget_GM")
+        row("YTD",                    "Sum of months where actuals have been entered")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("💱 FX / Currency")
+        row("TRY cost → EUR",         "cost_TRY ÷ FX_rate",
+            "FX = TRY per 1 EUR.")
+        row("EUR revenue → TRY",      "revenue_EUR × FX_rate")
+        row("USD/TRY (chart)",        "EUR/TRY ÷ EUR/USD",
+            "Derived from ECB daily rates. No extra API call.")
+        row("Weighted avg FX",        "Σ(block_HC × block_FX) ÷ total_HC",
+            "Used for backfill & training cost conversion when blocks have different FX overrides.")
+
 st.caption("CC Budget Tool · Streamlit · openpyxl · plotly")
