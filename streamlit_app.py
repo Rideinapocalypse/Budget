@@ -1137,6 +1137,35 @@ if st.button("+ Add Production Block", type="secondary"):
 
 blocks_to_delete = []
 for i, b in enumerate(blocks):
+    # ── Read widget state first (keys may already exist from prior render) ──
+    # This ensures title, warnings, and preview stats are always in sync
+    # with what the user currently sees in the inputs — not one cycle behind.
+    _hc_key  = f"hc_{active}_{i}";  _sal_key = f"sal_{active}_{i}"
+    _up_key  = f"up_{active}_{i}";  _lang_key = f"lang_{active}_{i}"
+    _shr_key = f"shr_{active}_{i}"; _fx_key  = f"fx_{active}_{i}"
+    _hr_key  = f"hr_{active}_{i}"
+
+    live_hc     = st.session_state.get(_hc_key,  b.get("hc", 0))
+    live_sal    = st.session_state.get(_sal_key, b.get("salary", 0))
+    live_up     = st.session_state.get(_up_key,  b.get("unit_price", 0))
+    live_lang   = st.session_state.get(_lang_key,b.get("lang", ""))
+
+    # Sync live values back to block dict so effective_hc and overrides are fresh
+    b["hc"] = live_hc; b["salary"] = live_sal
+    b["unit_price"] = live_up; b["lang"] = live_lang
+
+    # Resolve overrides using live widget state where available
+    _shr_raw_live = st.session_state.get(_shr_key, "")
+    if _shr_raw_live.strip():
+        _v = float(_shr_raw_live)
+        b["shrink_override"] = _v / 100 if _v > 1 else _v
+    _fx_raw_live = st.session_state.get(_fx_key, "")
+    if _fx_raw_live.strip():
+        b["fx_override"] = float(_fx_raw_live)
+    _hr_raw_live = st.session_state.get(_hr_key, "")
+    if _hr_raw_live.strip():
+        b["hours_override"] = float(_hr_raw_live)
+
     raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g_shrink
     shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
     fx     = b["fx_override"]     if b.get("fx_override")     is not None else g_fx
@@ -1153,7 +1182,7 @@ for i, b in enumerate(blocks):
     cost_e         = cost_try_total / fx if fx else 0
     margin         = rev_eur - cost_e
     margin_try     = rev_try - cost_try_total
-    label  = b.get("lang") or f"Block #{i+1}"
+    label  = live_lang or f"Block #{i+1}"
     warn   = " ⚠️" if (hc == 0 or salary == 0) else ""
     title  = f"Block #{i+1} — {label}{warn} | HC: {hc} | Rev: {fmt_eur(rev_eur)} ({fmt_try(rev_try)}) | Margin: {fmt_eur(margin)}"
 
