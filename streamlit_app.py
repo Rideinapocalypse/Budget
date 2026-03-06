@@ -1142,25 +1142,28 @@ for i, b in enumerate(blocks):
     _shr_key = f"shr_{active}_{i}"; _fx_key  = f"fx_{active}_{i}"
     _hr_key  = f"hr_{active}_{i}"
 
-    live_hc     = st.session_state.get(_hc_key,  b.get("hc", 0))
-    live_sal    = st.session_state.get(_sal_key, b.get("salary", 0))
-    live_up     = st.session_state.get(_up_key,  b.get("unit_price", 0))
-    live_lang   = st.session_state.get(_lang_key,b.get("lang", ""))
+    # Persist block widget values immediately — use session_state if key exists,
+    # so any rerender (COLA, overhead, etc.) always works from current values.
+    if _hc_key   in st.session_state: b["hc"]         = int(st.session_state[_hc_key])
+    if _sal_key  in st.session_state: b["salary"]     = float(st.session_state[_sal_key])
+    if _up_key   in st.session_state: b["unit_price"] = float(st.session_state[_up_key])
+    if _lang_key in st.session_state: b["lang"]       = st.session_state[_lang_key]
 
-    # Sync live values back to block dict so effective_hc and overrides are fresh
-    b["hc"] = live_hc; b["salary"] = live_sal
-    b["unit_price"] = live_up; b["lang"] = live_lang
+    live_hc   = b.get("hc", 0)
+    live_sal  = b.get("salary", 0)
+    live_up   = b.get("unit_price", 0)
+    live_lang = b.get("lang", "")
 
-    # Resolve overrides using live widget state where available
+    # Resolve overrides from session_state if available
     _shr_raw_live = st.session_state.get(_shr_key, "")
-    if _shr_raw_live.strip():
+    if isinstance(_shr_raw_live, str) and _shr_raw_live.strip():
         _v = float(_shr_raw_live)
         b["shrink_override"] = _v / 100 if _v > 1 else _v
     _fx_raw_live = st.session_state.get(_fx_key, "")
-    if _fx_raw_live.strip():
+    if isinstance(_fx_raw_live, str) and _fx_raw_live.strip():
         b["fx_override"] = float(_fx_raw_live)
     _hr_raw_live = st.session_state.get(_hr_key, "")
-    if _hr_raw_live.strip():
+    if isinstance(_hr_raw_live, str) and _hr_raw_live.strip():
         b["hours_override"] = float(_hr_raw_live)
 
     _shr_val   = b["shrink_override"] if b.get("shrink_override") is not None else g_shrink
