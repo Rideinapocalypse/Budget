@@ -94,72 +94,6 @@ def fetch_live_fx():
     except Exception:
         return 38.0, False
 
-@st.cache_data(ttl=3600)
-def fetch_fx_history():
-    """Fetch daily EUR/TRY and USD/TRY from ECB SDMX free API (no key needed).
-    Falls back gracefully with an empty result if unavailable."""
-    import datetime as _dt2
-    today = _dt2.date.today()
-    start = (today - _dt2.timedelta(days=185)).isoformat()
-    results = {"dates": [], "EUR_TRY": [], "USD_TRY": [],
-               "mtd_dates": [], "mtd_EUR_TRY": [], "mtd_USD_TRY": []}
-    try:
-        # ECB SDMX REST API — free, no key, daily data
-        # EXR.D.TRY.EUR.SP00.A  = EUR/TRY daily
-        # EXR.D.USD.EUR.SP00.A  = EUR/USD daily  (invert → USD/TRY = EUR/TRY ÷ EUR/USD)
-        url = (
-            f"https://data-api.ecb.europa.eu/service/data/EXR/"
-            f"D.TRY+USD.EUR.SP00.A"
-            f"?startPeriod={start}&format=jsondata&detail=dataonly"
-        )
-        with urllib.request.urlopen(url, timeout=10) as r:
-            data = json.loads(r.read())
-
-        # Parse SDMX-JSON structure
-        structure  = data["structure"]
-        series_dim = structure["dimensions"]["series"]
-        obs_dim    = structure["dimensions"]["observation"][0]  # time
-        dates      = [o["id"] for o in obs_dim["values"]]      # YYYY-MM-DD list
-
-        # Build currency index from series dimension
-        curr_dim = next(d for d in series_dim if d["id"] == "CURRENCY")
-        curr_vals = {v["id"]: i for i, v in enumerate(curr_dim["values"])}
-        try_idx = curr_vals.get("TRY")
-        usd_idx = curr_vals.get("USD")
-
-        datasets = data["dataSets"][0]["series"]
-
-        def get_series(currency_idx):
-            """Find series key matching currency index and return obs list."""
-            for key, series in datasets.items():
-                parts = key.split(":")
-                if int(parts[curr_dim["keyPosition"]]) == currency_idx:
-                    obs = series.get("observations", {})
-                    return {dates[int(k)]: v[0] for k, v in obs.items() if v[0] is not None}
-            return {}
-
-        try_obs = get_series(try_idx) if try_idx is not None else {}
-        usd_obs = get_series(usd_idx) if usd_idx is not None else {}
-
-        # Build aligned daily series
-        mtd_start = today.replace(day=1).isoformat()
-        for d in sorted(set(try_obs) & set(usd_obs)):
-            eur_try = round(try_obs[d], 2)
-            eur_usd = usd_obs[d]
-            usd_try = round(eur_try / eur_usd, 2) if eur_usd else None
-            if usd_try:
-                results["dates"].append(d)
-                results["EUR_TRY"].append(eur_try)
-                results["USD_TRY"].append(usd_try)
-                if d >= mtd_start:
-                    results["mtd_dates"].append(d)
-                    results["mtd_EUR_TRY"].append(eur_try)
-                    results["mtd_USD_TRY"].append(usd_try)
-
-        return results, bool(results["dates"])
-    except Exception:
-        return results, False
-
 def fmt_eur(v): return f"€{v:,.0f}"
 def fmt_try(v): return f"₺{v:,.0f}"
 def fmt_pct(v): return f"{v*100:.1f}%"
@@ -1730,104 +1664,157 @@ if has_any_actual:
 else:
     st.info("No actuals entered yet. Use '✏️ Enter / Edit Actuals' above to start tracking.", icon="ℹ️")
 
-# ── FX Rate Chart ────────────────────────────────────────────
+# ── FX Scenario Projection ───────────────────────────────────
 st.divider()
-st.markdown("### 💱 FX Rate — EUR/TRY & USD/TRY")
+st.markdown("### 💱 FX Rate Projection — EUR/TRY")
+st.caption("Model how TRY depreciation affects your full-year cost base. Uses live rate as anchor.")
 
-fx_tab1, fx_tab2 = st.tabs(["📅 Last 6 Months", "📆 Month to Date"])
+_live_fx, _fx_ok = fetch_live_fx()
+_fx_anchor = g["fx"]  # use the rate currently set in sidebar (may be manual)
 
-fx_data, fx_loaded = fetch_fx_history()
+fxp_c1, fxp_c2, fxp_c3, fxp_c4 = st.columns(4)
+fxp_bear = fxp_c1.number_input("🐻 Bear rate (yr-end)",
+    value=round(_fx_anchor * 1.20, 1), step=0.5,
+    help="Worst case: TRY depreciates 20%+ vs EUR by Dec.")
+fxp_base = fxp_c2.number_input("📊 Base rate (yr-end)",
+    value=round(_fx_anchor * 1.10, 1), step=0.5,
+    help="Most likely: ~10% annual TRY depreciation.")
+fxp_bull = fxp_c3.number_input("🐂 Bull rate (yr-end)",
+    value=round(_fx_anchor * 1.02, 1), step=0.5,
+    help="Optimistic: TRY nearly stable vs EUR.")
+fxp_now  = fxp_c4.number_input("📍 Current / anchor rate",
+    value=float(_fx_anchor), step=0.5,
+    help="Starting point. Defaults to sidebar FX rate.")
 
-if not fx_loaded or not fx_data["dates"]:
-    st.warning("Could not fetch FX history from ECB. The chart requires an internet connection.", icon="🔴")
-    if st.button("🔄 Retry", key="fx_retry"):
-        st.cache_data.clear()
-        st.rerun()
-else:
+# Build month-by-month linear interpolation for each scenario
+def _interp_fx(start, end):
+    """Linear interpolation from start (Jan) to end (Dec) across 12 months."""
+    return [round(start + (end - start) * i / 11, 2) for i in range(12)]
+
+proj_bear = _interp_fx(fxp_now, fxp_bear)
+proj_base = _interp_fx(fxp_now, fxp_base)
+proj_bull = _interp_fx(fxp_now, fxp_bull)
+
+# Show projected rates table
+proj_df = pd.DataFrame({
+    "Month":      MONTHS,
+    "🐻 Bear":    proj_bear,
+    "📊 Base":    proj_base,
+    "🐂 Bull":    proj_bull,
+})
+
+# Compute cost impact: recalc total cost at each scenario FX vs current budget FX
+# Cost in EUR = cost_TRY / FX  → higher FX = lower EUR cost (TRY cheaper)
+impact_rows = []
+for mi, m in enumerate(MONTHS):
+    mt = month_data[m]
+    cost_try = mt["cost_try"]
+    bgt_fx   = _fx_anchor
+    for scen, proj in [("Bear", proj_bear), ("Base", proj_base), ("Bull", proj_bull)]:
+        scen_fx  = proj[mi]
+        scen_cost_eur = cost_try / scen_fx if scen_fx else 0
+        delta_eur     = scen_cost_eur - mt["cost"]   # vs budget cost
+        impact_rows.append({"Month": m, "Scenario": scen,
+                             "FX": scen_fx, "Cost EUR": scen_cost_eur,
+                             "Δ vs Budget": delta_eur})
+
+try:
     import plotly.graph_objects as _fxgo
-    import datetime as _dt3
+    fig_fx = _fxgo.Figure()
 
-    today     = _dt3.date.today()
-    mtd_start = today.replace(day=1).isoformat()
-
-    dates_6m    = fx_data["dates"]
-    eur_try_6m  = fx_data["EUR_TRY"]
-    usd_try_6m  = fx_data["USD_TRY"]
-
-    # MTD: use dedicated weekly data fetched in history function
-    dates_mtd = fx_data.get("mtd_dates",   [])
-    eur_mtd   = fx_data.get("mtd_EUR_TRY", [])
-    usd_mtd   = fx_data.get("mtd_USD_TRY", [])
-
-    def make_fx_fig(dates, eur, usd, title):
-        fig = _fxgo.Figure()
-        fig.add_trace(_fxgo.Scatter(
-            name="EUR/TRY", x=dates, y=eur,
-            mode="lines", line=dict(color="#3b82f6", width=2.5),
-            fill="tozeroy", fillcolor="rgba(59,130,246,0.06)",
-            hovertemplate="%{x}<br>€1 = ₺%{y:,.2f}<extra></extra>",
+    _scenarios = [
+        ("🐻 Bear", proj_bear, "#ef4444", "rgba(239,68,68,0.08)"),
+        ("📊 Base", proj_base, "#3b82f6", "rgba(59,130,246,0.12)"),
+        ("🐂 Bull", proj_bull, "#10b981", "rgba(16,185,129,0.08)"),
+    ]
+    for label, proj, color, fill in _scenarios:
+        fig_fx.add_trace(_fxgo.Scatter(
+            name=label, x=MONTHS, y=proj,
+            mode="lines+markers",
+            line=dict(color=color, width=2.5),
+            marker=dict(size=6, color=color),
+            fill="tozeroy", fillcolor=fill,
+            hovertemplate=f"{label}<br>%{{x}}: ₺%{{y:,.2f}}<extra></extra>",
         ))
-        fig.add_trace(_fxgo.Scatter(
-            name="USD/TRY", x=dates, y=usd,
-            mode="lines", line=dict(color="#f59e0b", width=2),
-            hovertemplate="%{x}<br>$1 = ₺%{y:,.2f}<extra></extra>",
+
+    # Horizontal line for current rate
+    fig_fx.add_hline(y=fxp_now, line_dash="dot", line_color="#5a6480",
+                     annotation_text=f"Current: ₺{fxp_now:,.2f}",
+                     annotation_font_color="#5a6480", annotation_position="right")
+
+    fig_fx.update_layout(
+        plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+        font=dict(color="#8b96b0", family="Inter, sans-serif"),
+        legend=dict(orientation="h", y=1.06, bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        margin=dict(l=10, r=80, t=30, b=10), height=300,
+        xaxis=dict(showgrid=False, tickfont=dict(color="#8b96b0")),
+        yaxis=dict(showgrid=True, gridcolor="#1e2535",
+                   tickprefix="₺", tickfont=dict(color="#8b96b0")),
+        hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347", font=dict(color="#e8edf5")),
+    )
+    st.plotly_chart(fig_fx, use_container_width=True)
+
+    # Cost impact chart
+    st.markdown("**💸 Cost impact vs budget FX** — how much cheaper/more expensive your EUR cost becomes per scenario")
+    fig_imp = _fxgo.Figure()
+    for scen, color in [("Bear","#ef4444"),("Base","#3b82f6"),("Bull","#10b981")]:
+        rows = [r for r in impact_rows if r["Scenario"] == scen]
+        deltas = [r["Δ vs Budget"] for r in rows]
+        fig_imp.add_trace(_fxgo.Bar(
+            name=f"{'🐻' if scen=='Bear' else '📊' if scen=='Base' else '🐂'} {scen}",
+            x=MONTHS, y=deltas,
+            marker_color=color,
+            opacity=0.85,
+            hovertemplate=f"{scen}<br>%{{x}}: %{{y:+,.0f}} EUR<extra></extra>",
         ))
-        # Annotate latest values
-        if eur:
-            fig.add_annotation(x=dates[-1], y=eur[-1],
-                text=f"€ ₺{eur[-1]:,.2f}", showarrow=False,
-                font=dict(color="#3b82f6", size=11),
-                xanchor="left", yanchor="middle", xshift=8)
-        if usd:
-            fig.add_annotation(x=dates[-1], y=usd[-1],
-                text=f"$ ₺{usd[-1]:,.2f}", showarrow=False,
-                font=dict(color="#f59e0b", size=11),
-                xanchor="left", yanchor="middle", xshift=8)
-        fig.update_layout(
-            plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
-            font=dict(color="#8b96b0", family="Inter, sans-serif"),
-            legend=dict(orientation="h", y=1.06, bgcolor="rgba(0,0,0,0)",
-                        font=dict(size=11)),
-            margin=dict(l=10, r=60, t=30, b=10), height=320,
-            xaxis=dict(showgrid=False, tickfont=dict(color="#8b96b0"),
-                       tickangle=-30, nticks=12),
-            yaxis=dict(showgrid=True, gridcolor="#1e2535",
-                       tickprefix="₺", tickfont=dict(color="#8b96b0")),
-            hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347",
-                            font=dict(color="#e8edf5")),
+    fig_imp.add_hline(y=0, line_color="#2a3347", line_width=1.5)
+    fig_imp.update_layout(
+        barmode="group", bargap=0.15,
+        plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
+        font=dict(color="#8b96b0"),
+        legend=dict(orientation="h", y=1.06, bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        margin=dict(l=10, r=10, t=30, b=10), height=280,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="#1e2535",
+                   tickprefix="€", zeroline=False),
+        hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347", font=dict(color="#e8edf5")),
+    )
+    st.plotly_chart(fig_imp, use_container_width=True)
+
+    # Summary table: full-year cost impact per scenario
+    st.markdown("**📊 Full-year cost summary by FX scenario**")
+    fy_impact = {}
+    for scen in ["Bear","Base","Bull"]:
+        rows = [r for r in impact_rows if r["Scenario"] == scen]
+        fy_cost  = sum(r["Cost EUR"] for r in rows)
+        fy_delta = sum(r["Δ vs Budget"] for r in rows)
+        fy_rev   = sum(month_data[m]["rev"] for m in MONTHS)
+        fy_impact[scen] = {"FY Cost EUR": fy_cost, "Δ vs Budget": fy_delta,
+                           "FY Margin": fy_rev - fy_cost,
+                           "Margin %": (fy_rev - fy_cost)/fy_rev*100 if fy_rev else 0}
+
+    imp_cols = st.columns(3)
+    icons = {"Bear":"🐻","Base":"📊","Bull":"🐂"}
+    colors_scen = {"Bear":"#ef4444","Base":"#3b82f6","Bull":"#10b981"}
+    for col, scen in zip(imp_cols, ["Bear","Base","Bull"]):
+        d = fy_impact[scen]
+        delta_color = "#10b981" if d["Δ vs Budget"] <= 0 else "#ef4444"
+        col.markdown(
+            f"<div style='background:#1e2535;border:1px solid {colors_scen[scen]}33;"
+            f"border-radius:8px;padding:14px 16px;text-align:center'>"
+            f"<div style='color:{colors_scen[scen]};font-weight:700;font-size:14px;margin-bottom:8px'>"
+            f"{icons[scen]} {scen} Case  ·  yr-end ₺{proj_bear[-1] if scen=='Bear' else proj_base[-1] if scen=='Base' else proj_bull[-1]:,.1f}</div>"
+            f"<div style='color:#e8edf5;font-size:18px;font-weight:700'>€{d['FY Cost EUR']:,.0f}</div>"
+            f"<div style='color:#8b96b0;font-size:12px'>FY Total Cost</div>"
+            f"<div style='color:{delta_color};font-size:13px;margin-top:6px'>"
+            f"{'↓' if d['Δ vs Budget']<=0 else '↑'} €{abs(d['Δ vs Budget']):,.0f} vs budget FX</div>"
+            f"<div style='color:#8b96b0;font-size:12px;margin-top:4px'>"
+            f"Margin: <b style='color:#e8edf5'>{d['Margin %']:.1f}%</b></div>"
+            f"</div>", unsafe_allow_html=True
         )
-        return fig
 
-    with fx_tab1:
-        if eur_try_6m:
-            # 6m stats row
-            eur_min, eur_max = min(eur_try_6m), max(eur_try_6m)
-            eur_chg  = eur_try_6m[-1] - eur_try_6m[0]
-            usd_chg  = usd_try_6m[-1] - usd_try_6m[0]
-            s1,s2,s3,s4 = st.columns(4)
-            s1.metric("EUR/TRY Now",  f"₺{eur_try_6m[-1]:,.2f}", f"{eur_chg:+.2f} vs 6m ago")
-            s2.metric("USD/TRY Now",  f"₺{usd_try_6m[-1]:,.2f}", f"{usd_chg:+.2f} vs 6m ago")
-            s3.metric("EUR 6m Range", f"₺{eur_min:,.2f} – ₺{eur_max:,.2f}")
-            s4.metric("EUR volatility", f"₺{eur_max - eur_min:,.2f} spread")
-            st.plotly_chart(make_fx_fig(dates_6m, eur_try_6m, usd_try_6m,
-                            "EUR/TRY & USD/TRY — Last 6 Months"),
-                            use_container_width=True)
-        else:
-            st.info("No 6-month data available.")
-
-    with fx_tab2:
-        if dates_mtd:
-            mtd_eur_chg = eur_mtd[-1] - eur_mtd[0] if len(eur_mtd) > 1 else 0
-            mtd_usd_chg = usd_mtd[-1] - usd_mtd[0] if len(usd_mtd) > 1 else 0
-            t1,t2,t3 = st.columns(3)
-            t1.metric("EUR/TRY MTD",  f"₺{eur_mtd[-1]:,.2f}", f"{mtd_eur_chg:+.2f} MTD")
-            t2.metric("USD/TRY MTD",  f"₺{usd_mtd[-1]:,.2f}", f"{mtd_usd_chg:+.2f} MTD")
-            t3.metric("MTD days",     f"{len(dates_mtd)} trading days")
-            st.plotly_chart(make_fx_fig(dates_mtd, eur_mtd, usd_mtd,
-                            "EUR/TRY & USD/TRY — Month to Date"),
-                            use_container_width=True)
-        else:
-            st.info(f"No MTD data yet for {today.strftime('%B %Y')}.")
+except ImportError:
+    st.info("Install plotly to see FX projection charts.")
 
 # ── Charts ───────────────────────────────────────────────────
 st.divider()
@@ -2112,9 +2099,18 @@ with st.expander("📐 Formula Reference — How Calculations Work", expanded=Fa
         row("TRY cost → EUR",         "cost_TRY ÷ FX_rate",
             "FX = TRY per 1 EUR.")
         row("EUR revenue → TRY",      "revenue_EUR × FX_rate")
-        row("USD/TRY (chart)",        "EUR/TRY ÷ EUR/USD",
-            "Derived from ECB daily rates. No extra API call.")
         row("Weighted avg FX",        "Σ(block_HC × block_FX) ÷ total_HC",
             "Used for backfill & training cost conversion when blocks have different FX overrides.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        section("📈 FX Scenario Projection")
+        row("Monthly FX (scenario)",  "start_FX + (end_FX − start_FX) × (month_idx ÷ 11)",
+            "Linear interpolation: Jan = current rate, Dec = year-end scenario rate.")
+        row("Scenario cost (EUR)",    "month_cost_TRY ÷ scenario_FX_month",
+            "Higher TRY/EUR = your TRY costs are cheaper in EUR. Lower = more expensive.")
+        row("Cost Δ vs budget",       "scenario_cost_EUR − budget_cost_EUR",
+            "Negative = FX depreciation helps EUR cost. Positive = TRY strengthened.")
+        row("FY scenario margin %",   "(Σ revenue − Σ scenario_cost) ÷ Σ revenue × 100",
+            "Revenue stays fixed in EUR. Only cost base shifts with FX movement.")
 
 st.caption("CC Budget Tool · Streamlit · openpyxl · plotly")
