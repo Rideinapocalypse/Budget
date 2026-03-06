@@ -1224,41 +1224,6 @@ for i, b in enumerate(blocks):
                                    key=f"att_{active}_{i}", placeholder="blank = global",
                                    help="Override attrition rate for this block only e.g. 0.08 for 8%")
 
-        # ── COLA / UP increase ────────────────────────────────
-        cola_key = str(i)
-        cola_cfg = client()["cola_configs"].get(cola_key, {})
-        with st.expander("📈 COLA / Unit Price Change", expanded=bool(cola_cfg.get("date"))):
-            cc1, cc2, cc3 = st.columns([2, 2, 1])
-            cola_date_val = cola_cfg.get("date", "")
-            cola_up_val   = float(cola_cfg.get("new_up", up)) if cola_cfg.get("new_up") else float(b.get("unit_price", 0))
-            new_cola_date = cc1.text_input("Effective date (YYYY-MM-DD)",
-                                            value=cola_date_val, key=f"cola_date_{active}_{i}",
-                                            placeholder="e.g. 2025-04-15",
-                                            help="New UP applies from this date. Month of change is prorated.")
-            new_cola_up   = cc2.number_input("New Unit Price (EUR/hr)",
-                                              value=cola_up_val, step=0.1, min_value=0.0,
-                                              key=f"cola_up_{active}_{i}")
-            if cc3.button("Clear COLA", key=f"cola_clr_{active}_{i}", use_container_width=True):
-                client()["cola_configs"].pop(cola_key, None)
-                st.rerun()
-            if new_cola_date.strip():
-                try:
-                    _dt.date.fromisoformat(new_cola_date.strip())
-                    client()["cola_configs"][cola_key] = {"date": new_cola_date.strip(), "new_up": new_cola_up}
-                    # Show proration preview for current month
-                    eff = effective_up(active, i, b.get("unit_price", 0))
-                    if eff != b.get("unit_price", 0):
-                        st.caption(f"⚡ Effective UP this month: **€{eff:.4f}/hr** (prorated from €{b.get('unit_price',0):.2f} → €{new_cola_up:.2f} on {new_cola_date.strip()})")
-                    else:
-                        cola_dt = _dt.date.fromisoformat(new_cola_date.strip())
-                        m_idx   = MONTHS.index(active) + 1
-                        if cola_dt.month > m_idx:
-                            st.caption(f"ℹ️ COLA not yet active this month — full new UP applies from {MONTHS[cola_dt.month-1]}")
-                        else:
-                            st.caption(f"✅ Full new UP €{new_cola_up:.2f}/hr active this month")
-                except ValueError:
-                    st.warning("Invalid date format — use YYYY-MM-DD")
-
         # ── Cost breakdown ────────────────────────────────────
         ctc_cost_try     = hc * salary * g_ctc * (1 + g_bonus_pct)
         meal_cost_try    = hc * g_meal
@@ -1480,6 +1445,56 @@ if blocks_to_delete:
     for idx in sorted(blocks_to_delete, reverse=True):
         blocks.pop(idx)
     st.rerun()
+
+# ── COLA / Unit Price Schedule ────────────────────────────────
+st.divider()
+st.markdown("### 📈 COLA / Unit Price Schedule")
+st.caption("Set a future unit price increase per block. Kept separate so editing dates doesn't affect block inputs.")
+
+if not blocks:
+    st.info("Add production blocks above to configure COLA schedules.", icon="📈")
+else:
+    for i, b in enumerate(blocks):
+        label_cola = b.get("lang") or f"Block #{i+1}"
+        base_up_cola = b.get("unit_price", 0)
+        cola_key = str(i)
+        cola_cfg = client()["cola_configs"].get(cola_key, {})
+        has_cola = bool(cola_cfg.get("date"))
+        with st.expander(
+            f"{'📈' if has_cola else '➕'} Block #{i+1} — {label_cola} "
+            f"(base UP: €{base_up_cola:.2f}/hr)"
+            + (f" → €{cola_cfg.get('new_up', 0):.2f} from {cola_cfg.get('date','')}" if has_cola else " — no COLA set"),
+            expanded=has_cola
+        ):
+            cc1, cc2, cc3 = st.columns([2, 2, 1])
+            cola_date_val = cola_cfg.get("date", "")
+            cola_up_val   = float(cola_cfg.get("new_up", base_up_cola)) if cola_cfg.get("new_up") else float(base_up_cola)
+            new_cola_date = cc1.text_input("Effective date (YYYY-MM-DD)",
+                                            value=cola_date_val,
+                                            key=f"cola_date_{active}_{i}",
+                                            placeholder="e.g. 2026-04-15",
+                                            help="New UP applies from this date. Transition month is prorated by day.")
+            new_cola_up   = cc2.number_input("New Unit Price (EUR/hr)",
+                                              value=cola_up_val, step=0.1, min_value=0.0,
+                                              key=f"cola_up_{active}_{i}")
+            if cc3.button("Clear COLA", key=f"cola_clr_{active}_{i}", use_container_width=True):
+                client()["cola_configs"].pop(cola_key, None)
+                st.rerun()
+            if new_cola_date.strip():
+                try:
+                    _dt.date.fromisoformat(new_cola_date.strip())
+                    client()["cola_configs"][cola_key] = {"date": new_cola_date.strip(), "new_up": new_cola_up}
+                    eff_up = effective_up(active, i, base_up_cola)
+                    cola_dt = _dt.date.fromisoformat(new_cola_date.strip())
+                    m_idx   = MONTHS.index(active) + 1
+                    if eff_up != base_up_cola:
+                        st.caption(f"⚡ This month ({active}): prorated €{eff_up:.4f}/hr  (€{base_up_cola:.2f} → €{new_cola_up:.2f} on {new_cola_date.strip()})")
+                    elif cola_dt.month > m_idx:
+                        st.caption(f"ℹ️ Not yet active — full new UP €{new_cola_up:.2f}/hr applies from {MONTHS[cola_dt.month-1]}")
+                    else:
+                        st.caption(f"✅ Full new UP €{new_cola_up:.2f}/hr active from {MONTHS[cola_dt.month-1]}")
+                except ValueError:
+                    st.warning("Invalid date — use YYYY-MM-DD")
 
 # ── Overhead Roles ───────────────────────────────────────────
 st.divider()
