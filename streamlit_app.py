@@ -428,7 +428,7 @@ def build_template(gh, gs, gfx, gctc, gbp, gm):
                 b.get("hc", 0),
                 b.get("salary", 0),
                 b.get("unit_price", 0),
-                b["shrink_override"] if b.get("shrink_override") is not None else "",
+                (b["shrink_override"]*100 if b.get("shrink_override") is not None and b["shrink_override"] <= 1 else b.get("shrink_override","")) if b.get("shrink_override") is not None else "",
                 b["fx_override"]     if b.get("fx_override")     is not None else "",
                 b["hours_override"]  if b.get("hours_override")  is not None else "",
                 att,
@@ -1175,8 +1175,13 @@ for i, b in enumerate(blocks):
             blocks_to_delete.append(i)
 
         r2c1,r2c2,r2c3,r2c4,r2c5,r2c6 = st.columns([2,2,2,2,2,2])
-        shr_raw = r2c1.text_input(f"Shrinkage Override (global: {g_shrink*100:.0f}%)",
-                                   value="" if b.get("shrink_override") is None else str(b["shrink_override"]),
+        # Display stored decimal as percentage for user (0.15 → "15")
+        _shr_stored = b.get("shrink_override")
+        _shr_display = "" if _shr_stored is None else (
+            f"{_shr_stored*100:.1f}" if _shr_stored <= 1 else f"{_shr_stored:.1f}"
+        )
+        shr_raw = r2c1.text_input(f"Shrinkage Override % (global: {g_shrink*100:.0f}%)",
+                                   value=_shr_display,
                                    key=f"shr_{active}_{i}", placeholder="blank = global")
         fx_raw  = r2c2.text_input(f"FX Override (global: {g_fx})",
                                    value="" if b.get("fx_override") is None else str(b["fx_override"]),
@@ -1248,7 +1253,7 @@ for i, b in enumerate(blocks):
         with bd1:
             st.markdown("**🕐 Eff. Hrs / Agent**")
             st.markdown(f"<span style='color:#8b96b0;font-size:15px;font-weight:600'>{eff:.1f} hrs</span>", unsafe_allow_html=True)
-            st.caption(f"{hours}h × (1 - {shrink*100:.0f}%)")
+            st.caption(f"{hours}h × (1 − {shrink*100:.0f}%)")
         with bd2:
             st.markdown("**💸 Salary CTC**")
             st.markdown(f"<span style='color:#f59e0b;font-size:15px;font-weight:600'>₺{ctc_cost_try:,.0f}</span>", unsafe_allow_html=True)
@@ -1299,7 +1304,7 @@ for i, b in enumerate(blocks):
 
         blocks[i].update({
             "lang": new_lang, "hc": new_hc, "salary": new_sal, "unit_price": new_up,
-            "shrink_override":    float(shr_raw) if shr_raw.strip() else None,
+            "shrink_override":    (float(shr_raw)/100 if float(shr_raw) > 1 else float(shr_raw)) if shr_raw.strip() else None,
             "fx_override":        float(fx_raw)  if fx_raw.strip()  else None,
             "hours_override":     float(hr_raw)  if hr_raw.strip()  else None,
             "attrition_override": float(att_raw) if att_raw.strip() else None,
