@@ -51,7 +51,15 @@ def _default_client(name="Client A"):
             "OM": {"ratio": 50, "hc_override": None, "salary": 80000},
         },
         overhead_monthly={m: None for m in MONTHS},
-        opex={"training_cost_per_hire": 5000},
+        opex={
+            "training_cost_per_hire": 5000,   # TRY — one-time per backfill hire
+            "recruitment_fee":        8000,   # TRY — one-time per any new hire (ramp-up + backfill)
+            "it_cost_per_seat":       1500,   # TRY — monthly per active HC
+            "facilities_per_seat":    2000,   # TRY — monthly per active HC
+            "capex_pc":              15000,   # TRY — one-time per new seat (HC increase only)
+            "capex_headset":          3000,   # TRY — one-time per new seat
+            "capex_software":         5000,   # TRY — one-time per new seat
+        },
         # Actuals: {month: {rev, cost, hc, hrs_billable, margin}}
         actuals={m: {} for m in MONTHS},
     )
@@ -61,10 +69,22 @@ if "clients" not in st.session_state:
 for _cl in st.session_state.clients:
     if "actuals" not in _cl:
         _cl["actuals"] = {m: {} for m in MONTHS}
+    # Migrate opex fields added in OPEX/CAPEX update
+    _opex_defaults = {"training_cost_per_hire":5000,"recruitment_fee":8000,
+                      "it_cost_per_seat":1500,"facilities_per_seat":2000,
+                      "capex_pc":15000,"capex_headset":3000,"capex_software":5000}
+    for _k, _v in _opex_defaults.items():
+        _cl.setdefault("opex", {}).setdefault(_k, _v)
 # Migrate existing clients that don't have actuals
 for _cl in st.session_state.clients:
     if "actuals" not in _cl:
         _cl["actuals"] = {m: {} for m in MONTHS}
+    # Migrate opex fields added in OPEX/CAPEX update
+    _opex_defaults = {"training_cost_per_hire":5000,"recruitment_fee":8000,
+                      "it_cost_per_seat":1500,"facilities_per_seat":2000,
+                      "capex_pc":15000,"capex_headset":3000,"capex_software":5000}
+    for _k, _v in _opex_defaults.items():
+        _cl.setdefault("opex", {}).setdefault(_k, _v)
 if "active_client" not in st.session_state:
     st.session_state.active_client = 0
 if "active_month" not in st.session_state:
@@ -190,16 +210,46 @@ def get_totals(month, g):
     total_hrs_incl      = total_hrs + backfill_hrs
 
     # OPEX: Training cost (one-time per backfill hire, in TRY)
-    training_cost_try  = backfill_hc * cl.get("opex", {}).get("training_cost_per_hire", 0)
+    opex_cfg = cl.get("opex", {})
+    training_cost_try  = backfill_hc * opex_cfg.get("training_cost_per_hire", 0)
     training_cost_eur  = training_cost_try / avg_fx if avg_fx else 0
+
+    # OPEX: Recruitment fee (per new hire = backfill + any HC ramp-up vs prior month)
+    prior_month = MONTHS[MONTHS.index(month) - 1] if MONTHS.index(month) > 0 else None
+    prior_hc    = sum(effective_hc(prior_month, b) for b in cl["blocks"].get(prior_month, [])) if prior_month else total_hc
+    hc_increase = max(0.0, total_hc - prior_hc)   # new seats this month (ramp-up delta)
+    new_hires   = backfill_hc + hc_increase        # total new people this month
+    recruitment_cost_try = new_hires * opex_cfg.get("recruitment_fee", 0)
+    recruitment_cost_eur = recruitment_cost_try / avg_fx if avg_fx else 0
+
+    # OPEX: IT & telephony (monthly × active HC)
+    it_cost_try  = total_hc * opex_cfg.get("it_cost_per_seat", 0)
+    it_cost_eur  = it_cost_try / avg_fx if avg_fx else 0
+
+    # OPEX: Facilities / rent (monthly × active HC)
+    fac_cost_try = total_hc * opex_cfg.get("facilities_per_seat", 0)
+    fac_cost_eur = fac_cost_try / avg_fx if avg_fx else 0
+
+    # CAPEX: one-time on HC increase only (new seats, not backfill)
+    capex_try = hc_increase * (
+        opex_cfg.get("capex_pc", 0) +
+        opex_cfg.get("capex_headset", 0) +
+        opex_cfg.get("capex_software", 0)
+    )
+    capex_eur = capex_try / avg_fx if avg_fx else 0
+
+    total_opex_try = training_cost_try + recruitment_cost_try + it_cost_try + fac_cost_try
+    total_opex_eur = training_cost_eur + recruitment_cost_eur + it_cost_eur + fac_cost_eur
+    total_capex_try = capex_try
+    total_capex_eur = capex_eur
 
     # Overhead roles (TM/QM/OM) — pure cost, no hours, no revenue
     oh = calc_overhead(month, total_hc, g, cl)
     oh_cost_eur = oh["total_cost_eur"]
     oh_cost_try = oh["total_cost_try"]
 
-    grand_cost_eur = total_cost_eur_incl + oh_cost_eur + training_cost_eur
-    grand_cost_try = total_cost_try_incl + oh_cost_try + training_cost_try
+    grand_cost_eur = total_cost_eur_incl + oh_cost_eur + total_opex_eur + total_capex_eur
+    grand_cost_try = total_cost_try_incl + oh_cost_try + total_opex_try + total_capex_try
 
     # Break-even: must cover all costs (prod + backfill + overhead + opex) per billable hr
     breakeven_up = (grand_cost_eur / total_hrs) if total_hrs > 0 else 0
@@ -212,6 +262,14 @@ def get_totals(month, g):
         backfill_cost_try=backfill_cost_try,
         training_cost_eur=training_cost_eur,
         training_cost_try=training_cost_try,
+        recruitment_cost_eur=recruitment_cost_eur,
+        recruitment_cost_try=recruitment_cost_try,
+        it_cost_eur=it_cost_eur,        it_cost_try=it_cost_try,
+        fac_cost_eur=fac_cost_eur,      fac_cost_try=fac_cost_try,
+        capex_eur=capex_eur,            capex_try=capex_try,
+        hc_increase=hc_increase,        new_hires=new_hires,
+        total_opex_eur=total_opex_eur,  total_opex_try=total_opex_try,
+        total_capex_eur=total_capex_eur,total_capex_try=total_capex_try,
         oh_cost_eur=oh_cost_eur,        oh_cost_try=oh_cost_try,
         oh=oh,
         margin=total_rev_eur - grand_cost_eur,
@@ -773,14 +831,52 @@ with st.sidebar:
     st.session_state.backfill_efficiency  = bf_efficiency
 
     st.divider()
-    st.markdown('<div class="section-title">OPEX — Training</div>', unsafe_allow_html=True)
-    opex_training = st.number_input(
-        "Training cost per backfill hire (TRY)",
-        value=float(client().get("opex", {}).get("training_cost_per_hire", 5000)),
-        step=500.0, min_value=0.0,
-        help="One-time cost per new backfill agent: onboarding, training materials, trainer time."
-    )
-    client().setdefault("opex", {})["training_cost_per_hire"] = opex_training
+    st.markdown('<div class="section-title">OPEX & CAPEX</div>', unsafe_allow_html=True)
+    st.caption("All rates in TRY. Converted to EUR at weighted FX rate.")
+
+    with st.expander("🔁 OPEX — Recurring (per HC / month)", expanded=False):
+        opex_it  = st.number_input("IT & Telephony per seat / month (TRY)",
+            value=float(client().get("opex",{}).get("it_cost_per_seat",1500)),
+            step=100.0, min_value=0.0,
+            help="Softphone license, headset rental, CRM seat, internet share.")
+        opex_fac = st.number_input("Facilities / Rent per seat / month (TRY)",
+            value=float(client().get("opex",{}).get("facilities_per_seat",2000)),
+            step=100.0, min_value=0.0,
+            help="Desk cost: office rent, electricity, cleaning allocated per seat.")
+        client().setdefault("opex",{}).update({
+            "it_cost_per_seat": opex_it, "facilities_per_seat": opex_fac})
+
+    with st.expander("🧾 OPEX — One-time per new hire", expanded=False):
+        opex_training = st.number_input("Training cost per backfill hire (TRY)",
+            value=float(client().get("opex",{}).get("training_cost_per_hire",5000)),
+            step=500.0, min_value=0.0,
+            help="Triggered by attrition backfill only. Onboarding, materials, trainer time.")
+        opex_recruit  = st.number_input("Recruitment fee per new hire (TRY)",
+            value=float(client().get("opex",{}).get("recruitment_fee",8000)),
+            step=500.0, min_value=0.0,
+            help="Triggered by BOTH backfill AND ramp-up HC increases. Agency or internal HR cost.")
+        client().setdefault("opex",{}).update({
+            "training_cost_per_hire": opex_training, "recruitment_fee": opex_recruit})
+
+    with st.expander("🖥 CAPEX — One-time per new seat (ramp-up only)", expanded=False):
+        st.caption("Only charged when HC increases vs prior month. Not charged on backfill or stable months.")
+        capex_pc  = st.number_input("Workstation / PC (TRY)",
+            value=float(client().get("opex",{}).get("capex_pc",15000)),
+            step=500.0, min_value=0.0)
+        capex_hs  = st.number_input("Headset hardware (TRY)",
+            value=float(client().get("opex",{}).get("capex_headset",3000)),
+            step=100.0, min_value=0.0)
+        capex_sw  = st.number_input("Software license / perpetual (TRY)",
+            value=float(client().get("opex",{}).get("capex_software",5000)),
+            step=500.0, min_value=0.0)
+        total_per_seat = capex_pc + capex_hs + capex_sw
+        st.markdown(
+            f"<div style='background:#1e2535;border:1px solid #2a3347;border-radius:5px;"
+            f"padding:8px 12px;font-size:12px;color:#8b96b0'>"
+            f"Total per new seat: <b style='color:#e8edf5'>₺{total_per_seat:,.0f}</b>"
+            f"</div>", unsafe_allow_html=True)
+        client().setdefault("opex",{}).update({
+            "capex_pc": capex_pc, "capex_headset": capex_hs, "capex_software": capex_sw})
 
     g = dict(hours=g_hours, shrink=g_shrink, fx=g_fx,
              ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal)
@@ -1488,6 +1584,10 @@ LINE_ITEMS = [
     "  Prod. Cost",
     "  Backfill Cost",
     "  Training Cost",
+    "  Recruitment Cost",
+    "  IT & Telephony",
+    "  Facilities / Rent",
+    "  CAPEX (new seats)",
     "  TM Cost",
     "  QM Cost",
     "  OM Cost",
@@ -1515,6 +1615,9 @@ pnl_try = {"Line Item": LINE_ITEMS}
 fy_sums = {k: 0.0 for k in ["rev","rev_try","cost","cost_try",
                               "cost_excl_backfill","backfill_cost_eur","backfill_cost_try",
                               "training_cost_eur","training_cost_try",
+                              "recruitment_cost_eur","recruitment_cost_try",
+                              "it_cost_eur","it_cost_try","fac_cost_eur","fac_cost_try",
+                              "capex_eur","capex_try",
                               "oh_cost_eur","oh_cost_try","margin","margin_try",
                               "hrs_billable","backfill_hrs","hrs"]}
 fy_oh = {"TM":{"cost_eur":0,"cost_try":0,"hc":0},
@@ -1539,6 +1642,10 @@ for m in MONTHS:
             fmt_eur(mt["cost_excl_backfill"]),
             fmt_eur(mt["backfill_cost_eur"]),
             fmt_eur(mt.get("training_cost_eur",0)),
+            fmt_eur(mt.get("recruitment_cost_eur",0)),
+            fmt_eur(mt.get("it_cost_eur",0)),
+            fmt_eur(mt.get("fac_cost_eur",0)),
+            fmt_eur(mt.get("capex_eur",0)),
             fmt_eur(mt["oh"]["TM"]["cost_eur"]),
             fmt_eur(mt["oh"]["QM"]["cost_eur"]),
             fmt_eur(mt["oh"]["OM"]["cost_eur"]),
@@ -1565,6 +1672,10 @@ for m in MONTHS:
             fmt_try(prod_c_try),
             fmt_try(mt["backfill_cost_try"]),
             fmt_try(mt.get("training_cost_try",0)),
+            fmt_try(mt.get("recruitment_cost_try",0)),
+            fmt_try(mt.get("it_cost_try",0)),
+            fmt_try(mt.get("fac_cost_try",0)),
+            fmt_try(mt.get("capex_try",0)),
             fmt_try(mt["oh"]["TM"]["cost_try"]),
             fmt_try(mt["oh"]["QM"]["cost_try"]),
             fmt_try(mt["oh"]["OM"]["cost_try"]),
@@ -1602,6 +1713,10 @@ def fy_row_eur():
         fmt_eur(fy_sums["cost_excl_backfill"]),
         fmt_eur(fy_sums["backfill_cost_eur"]),
         fmt_eur(fy_sums["training_cost_eur"]),
+        fmt_eur(fy_sums["recruitment_cost_eur"]),
+        fmt_eur(fy_sums["it_cost_eur"]),
+        fmt_eur(fy_sums["fac_cost_eur"]),
+        fmt_eur(fy_sums["capex_eur"]),
         fmt_eur(fy_oh["TM"]["cost_eur"]),
         fmt_eur(fy_oh["QM"]["cost_eur"]),
         fmt_eur(fy_oh["OM"]["cost_eur"]),
@@ -1621,6 +1736,10 @@ def fy_row_try():
         fmt_try(fy_prod_c_try),
         fmt_try(fy_sums["backfill_cost_try"]),
         fmt_try(fy_sums["training_cost_try"]),
+        fmt_try(fy_sums["recruitment_cost_try"]),
+        fmt_try(fy_sums["it_cost_try"]),
+        fmt_try(fy_sums["fac_cost_try"]),
+        fmt_try(fy_sums["capex_try"]),
         fmt_try(fy_oh["TM"]["cost_try"]),
         fmt_try(fy_oh["QM"]["cost_try"]),
         fmt_try(fy_oh["OM"]["cost_try"]),
@@ -2177,10 +2296,21 @@ with st.expander("📐 Formula Reference — How Calculations Work", expanded=Fa
             "🟢 < 85%  🟡 85-99%  🔴 ≥ 100% (overstretched)")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        section("📦 OPEX — Training")
-        row("Training cost (TRY)",    "backfill_HC × training_cost_per_hire",
-            "One-time per new backfill agent. Set in sidebar.")
-        row("Training cost (EUR)",    "training_cost_TRY ÷ weighted_avg_FX")
+        section("📦 OPEX & CAPEX")
+        row("Training cost (TRY)",       "backfill_HC × training_cost_per_hire",
+            "One-time. Triggered by attrition backfill only.")
+        row("Recruitment fee (TRY)",     "(backfill_HC + HC_increase) × recruitment_fee",
+            "One-time per new person. Triggered by BOTH backfill AND ramp-up delta.")
+        row("IT & Telephony (TRY)",      "active_HC × it_cost_per_seat",
+            "Recurring monthly. Scales up/down with every HC change.")
+        row("Facilities / Rent (TRY)",   "active_HC × facilities_per_seat",
+            "Recurring monthly. Desk cost: rent + electricity + cleaning per seat.")
+        row("CAPEX per new seat (TRY)",  "HC_increase × (capex_pc + capex_headset + capex_software)",
+            "One-time. Only fires when HC grows vs prior month. No CAPEX on backfill or stable/down months.")
+        row("HC increase (delta)",       "max(0, this_month_HC − prior_month_HC)",
+            "Negative delta (ramp-down) = zero CAPEX. CAPEX only on net new seats.")
+        row("All OPEX/CAPEX → EUR",      "cost_TRY ÷ weighted_avg_FX",
+            "Same FX conversion as all other TRY costs.")
 
         st.markdown("<br>", unsafe_allow_html=True)
         section("📊 P&L Aggregates")
