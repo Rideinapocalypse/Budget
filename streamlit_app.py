@@ -2058,34 +2058,65 @@ try:
 
     # Summary table: full-year cost impact per scenario
     st.markdown("**📊 Full-year cost summary by FX scenario**")
+    st.caption("Revenue fixed in EUR. Lower TRY = cheaper costs = higher margin. Bear = best for your margins.")
+
     fy_impact = {}
+    fy_rev = sum(month_data[m]["rev"] for m in MONTHS)
+    bgt_cost = sum(month_data[m]["cost"] for m in MONTHS)
+    bgt_margin_pct = (fy_rev - bgt_cost) / fy_rev * 100 if fy_rev else 0
+
     for scen in ["Bear","Base","Bull"]:
-        rows = [r for r in impact_rows if r["Scenario"] == scen]
-        fy_cost  = sum(r["Cost EUR"] for r in rows)
-        fy_delta = sum(r["Δ vs Budget"] for r in rows)
-        fy_rev   = sum(month_data[m]["rev"] for m in MONTHS)
-        fy_impact[scen] = {"FY Cost EUR": fy_cost, "Δ vs Budget": fy_delta,
-                           "FY Margin": fy_rev - fy_cost,
-                           "Margin %": (fy_rev - fy_cost)/fy_rev*100 if fy_rev else 0}
+        rows    = [r for r in impact_rows if r["Scenario"] == scen]
+        fy_cost = sum(r["Cost EUR"] for r in rows)
+        fy_impact[scen] = {
+            "FY Cost EUR":  fy_cost,
+            "Cost Saving":  bgt_cost - fy_cost,   # positive = cheaper than budget
+            "FY Margin":    fy_rev - fy_cost,
+            "Margin %":     (fy_rev - fy_cost) / fy_rev * 100 if fy_rev else 0,
+        }
+
+    yr_ends  = {"Bear": proj_bear[-1], "Base": proj_base[-1], "Bull": proj_bull[-1]}
+    # Colour by outcome quality — Bear is best margin outcome (green), Bull is worst (red)
+    outcome_colors = {"Bear": "#10b981", "Base": "#3b82f6", "Bull": "#ef4444"}
+    icons = {"Bear": "🐻", "Base": "📊", "Bull": "🐂"}
+    scen_desc = {
+        "Bear": "TRY weakens most → lowest EUR costs → best margin",
+        "Base": "Moderate TRY depreciation → likely outcome",
+        "Bull": "TRY stays strong → highest EUR costs → lowest margin",
+    }
 
     imp_cols = st.columns(3)
-    icons = {"Bear":"🐻","Base":"📊","Bull":"🐂"}
-    colors_scen = {"Bear":"#ef4444","Base":"#3b82f6","Bull":"#10b981"}
-    for col, scen in zip(imp_cols, ["Bear","Base","Bull"]):
+    for col, scen in zip(imp_cols, ["Bear", "Base", "Bull"]):
         d = fy_impact[scen]
-        delta_color = "#10b981" if d["Δ vs Budget"] <= 0 else "#ef4444"
+        saving   = d["Cost Saving"]          # positive = you save vs budget
+        mgn_diff = d["Margin %"] - bgt_margin_pct
+        color    = outcome_colors[scen]
+        save_arrow = "↑" if saving >= 0 else "↓"
+        save_color = "#10b981" if saving >= 0 else "#ef4444"
+        mgn_arrow  = "↑" if mgn_diff >= 0 else "↓"
+        mgn_color  = "#10b981" if mgn_diff >= 0 else "#ef4444"
         col.markdown(
-            f"<div style='background:#1e2535;border:1px solid {colors_scen[scen]}33;"
-            f"border-radius:8px;padding:14px 16px;text-align:center'>"
-            f"<div style='color:{colors_scen[scen]};font-weight:700;font-size:14px;margin-bottom:8px'>"
-            f"{icons[scen]} {scen} Case  ·  yr-end ₺{proj_bear[-1] if scen=='Bear' else proj_base[-1] if scen=='Base' else proj_bull[-1]:,.1f}</div>"
-            f"<div style='color:#e8edf5;font-size:18px;font-weight:700'>€{d['FY Cost EUR']:,.0f}</div>"
-            f"<div style='color:#8b96b0;font-size:12px'>FY Total Cost</div>"
-            f"<div style='color:{delta_color};font-size:13px;margin-top:6px'>"
-            f"{'↓' if d['Δ vs Budget']<=0 else '↑'} €{abs(d['Δ vs Budget']):,.0f} vs budget FX</div>"
-            f"<div style='color:#8b96b0;font-size:12px;margin-top:4px'>"
-            f"Margin: <b style='color:#e8edf5'>{d['Margin %']:.1f}%</b></div>"
-            f"</div>", unsafe_allow_html=True
+            f"<div style='background:#1e2535;border:1px solid {color}44;"
+            f"border-radius:8px;padding:16px;text-align:center'>"
+            # Title row
+            f"<div style='color:{color};font-weight:700;font-size:13px'>"
+            f"{icons[scen]} {scen} Case · yr-end ₺{yr_ends[scen]:,.1f}</div>"
+            f"<div style='color:#5a6480;font-size:11px;margin-bottom:10px'>{scen_desc[scen]}</div>"
+            # FY Cost
+            f"<div style='color:#e8edf5;font-size:20px;font-weight:700'>€{d['FY Cost EUR']:,.0f}</div>"
+            f"<div style='color:#8b96b0;font-size:11px'>Full-year total cost</div>"
+            # Divider
+            f"<div style='border-top:1px solid #2a3347;margin:10px 0'></div>"
+            # Cost saving vs budget
+            f"<div style='color:#8b96b0;font-size:11px'>Cost saving vs budget FX</div>"
+            f"<div style='color:{save_color};font-size:15px;font-weight:700'>"
+            f"{save_arrow} €{abs(saving):,.0f}</div>"
+            # Margin
+            f"<div style='color:#8b96b0;font-size:11px;margin-top:6px'>"
+            f"Margin: <b style='color:{mgn_color}'>{d['Margin %']:.1f}%</b>"
+            f" <span style='color:{mgn_color};font-size:10px'>({mgn_arrow}{abs(mgn_diff):.1f}pp vs budget)</span>"
+            f"</div></div>",
+            unsafe_allow_html=True
         )
 
 except ImportError:
