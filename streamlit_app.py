@@ -160,8 +160,9 @@ def get_totals(month, g):
     weighted_sal = weighted_fx = weighted_hrs = 0.0
     cl = client()
     for blk_i, b in enumerate(cl["blocks"].get(month, [])):
-        raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
-        shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
+        _shr_val   = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
+        raw_shrink = _shr_val / 100 if _shr_val > 1 else _shr_val   # always normalise to decimal
+        shrink = max(0.0, min(0.99, raw_shrink))
         fx     = b["fx_override"]     if b.get("fx_override")     is not None else g["fx"]
         hours  = b["hours_override"]  if b.get("hours_override")  is not None else g["hours"]
         hc      = effective_hc(month, b)              # ramp-adjusted HC
@@ -551,8 +552,9 @@ def build_export(g):
     ri2 = 3
     for m in MONTHS:
         for blk_i, b in enumerate(client()["blocks"].get(m, [])):
-            raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
-            shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
+            _shr_val   = b["shrink_override"] if b.get("shrink_override") is not None else g["shrink"]
+            raw_shrink = _shr_val / 100 if _shr_val > 1 else _shr_val
+            shrink = max(0.0, min(0.99, raw_shrink))
             fx     = b["fx_override"]    if b.get("fx_override")    is not None else g["fx"]
             hours  = b["hours_override"] if b.get("hours_override") is not None else g["hours"]
             hc, sal = b.get("hc",0), b.get("salary",0)
@@ -1166,8 +1168,9 @@ for i, b in enumerate(blocks):
     if _hr_raw_live.strip():
         b["hours_override"] = float(_hr_raw_live)
 
-    raw_shrink = b["shrink_override"] if b.get("shrink_override") is not None else g_shrink
-    shrink = max(0.0, min(0.99, raw_shrink if raw_shrink <= 1 else raw_shrink / 100))
+    _shr_val   = b["shrink_override"] if b.get("shrink_override") is not None else g_shrink
+    raw_shrink = _shr_val / 100 if _shr_val > 1 else _shr_val
+    shrink = max(0.0, min(0.99, raw_shrink))
     fx     = b["fx_override"]     if b.get("fx_override")     is not None else g_fx
     hours  = b["hours_override"]  if b.get("hours_override")  is not None else g_hours
     base_hc        = b.get("hc", 0)
