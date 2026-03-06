@@ -69,22 +69,17 @@ if "clients" not in st.session_state:
 for _cl in st.session_state.clients:
     if "actuals" not in _cl:
         _cl["actuals"] = {m: {} for m in MONTHS}
-    # Migrate opex fields added in OPEX/CAPEX update
     _opex_defaults = {"training_cost_per_hire":5000,"recruitment_fee":8000,
                       "it_cost_per_seat":1500,"facilities_per_seat":2000,
                       "capex_pc":15000,"capex_headset":3000,"capex_software":5000}
     for _k, _v in _opex_defaults.items():
         _cl.setdefault("opex", {}).setdefault(_k, _v)
-# Migrate existing clients that don't have actuals
-for _cl in st.session_state.clients:
-    if "actuals" not in _cl:
-        _cl["actuals"] = {m: {} for m in MONTHS}
-    # Migrate opex fields added in OPEX/CAPEX update
-    _opex_defaults = {"training_cost_per_hire":5000,"recruitment_fee":8000,
-                      "it_cost_per_seat":1500,"facilities_per_seat":2000,
-                      "capex_pc":15000,"capex_headset":3000,"capex_software":5000}
-    for _k, _v in _opex_defaults.items():
-        _cl.setdefault("opex", {}).setdefault(_k, _v)
+    # Normalise shrink_override: old sessions stored 15.0 instead of 0.15
+    for _m in MONTHS:
+        for _b in _cl.get("blocks", {}).get(_m, []):
+            _sv = _b.get("shrink_override")
+            if _sv is not None and _sv > 1:
+                _b["shrink_override"] = _sv / 100
 if "active_client" not in st.session_state:
     st.session_state.active_client = 0
 if "active_month" not in st.session_state:
