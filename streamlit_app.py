@@ -1212,35 +1212,102 @@ for i, b in enumerate(blocks):
         # ── HC Ramp Schedule ─────────────────────────────────
         ramp = blocks[i].get("hc_ramp", {})
         has_ramp = any(ramp.get(m) is not None for m in MONTHS)
-        with st.expander(f"📈 HC Ramp Schedule {'(active)' if has_ramp else '(optional)'}", expanded=has_ramp):
-            st.caption(f"Override HC per month. Blank = use base HC ({new_hc}). "
-                       f"Useful for new contract ramp-ups or planned reductions.")
+
+        # Derive ramp direction label for expander title
+        _ramp_hcs_cur = [ramp.get(m, new_hc) for m in MONTHS]
+        _first = _ramp_hcs_cur[0]; _last = _ramp_hcs_cur[-1]
+        _ramp_label = ""
+        if has_ramp:
+            if _last > _first:   _ramp_label = " 📈 ramp-up"
+            elif _last < _first: _ramp_label = " 📉 ramp-down"
+            elif any(v == 0 for v in _ramp_hcs_cur): _ramp_label = " ⛔ includes zero months"
+            else:                _ramp_label = " ↔ non-linear"
+
+        with st.expander(
+            f"{'📈' if not has_ramp else '🔢'} HC Ramp Schedule"
+            f"{'(active' + _ramp_label + ')' if has_ramp else '(optional)'}",
+            expanded=has_ramp
+        ):
+            st.caption(
+                f"Set HC per month. Leave at base ({new_hc}) if unchanged. "
+                f"**Ramp-down to 0** = no revenue, no cost for that month. "
+                f"The tool automatically handles partial months — "
+                f"just set the HC you expect to be billing."
+            )
+
+            # Quick-fill helpers
+            qf1, qf2, qf3 = st.columns(3)
+            if qf1.button("⬆ Linear ramp-up to base", key=f"ramp_up_{active}_{i}",
+                          help="Starts at 0 in Jan, reaches base HC by Dec"):
+                new_q = {m: max(0, round(new_hc * mi / 11)) for mi, m in enumerate(MONTHS)}
+                blocks[i]["hc_ramp"] = {m: v for m, v in new_q.items() if v != new_hc}
+                st.rerun()
+            if qf2.button("⬇ Linear ramp-down to 0", key=f"ramp_dn_{active}_{i}",
+                          help="Starts at base HC in Jan, reaches 0 by Dec"):
+                new_q = {m: max(0, round(new_hc * (1 - mi / 11))) for mi, m in enumerate(MONTHS)}
+                blocks[i]["hc_ramp"] = {m: v for m, v in new_q.items() if v != new_hc}
+                st.rerun()
+            if qf3.button("🔄 Reset to flat", key=f"ramp_reset_{active}_{i}"):
+                blocks[i]["hc_ramp"] = {}
+                st.rerun()
+
+            # Per-month inputs with direction arrow indicators
             rc = st.columns(12)
             new_ramp = {}
+            ramp_vals = []
             for mi, m in enumerate(MONTHS):
                 with rc[mi]:
                     cur = ramp.get(m)
-                    eff = effective_hc(m, blocks[i])
-                    v = rc[mi].number_input(
+                    v = st.number_input(
                         m, value=int(cur) if cur is not None else new_hc,
                         min_value=0, step=1,
                         key=f"ramp_{active}_{i}_{m}",
-                        help=f"Effective HC in {m}"
                     )
-                    # Only store if different from base HC
+                    ramp_vals.append(v)
                     if v != new_hc:
                         new_ramp[m] = v
+
+            # Direction + status indicators per month
+            ind_cols = st.columns(12)
+            prev = new_hc
+            for mi, (m, v) in enumerate(zip(MONTHS, ramp_vals)):
+                with ind_cols[mi]:
+                    if v == 0:
+                        st.markdown("<div style='text-align:center;color:#ef4444;font-size:16px'>⛔</div>",
+                                    unsafe_allow_html=True)
+                        st.caption("no rev")
+                    elif v > prev:
+                        st.markdown("<div style='text-align:center;color:#10b981;font-size:16px'>↑</div>",
+                                    unsafe_allow_html=True)
+                        st.caption(f"+{v-prev}")
+                    elif v < prev:
+                        st.markdown("<div style='text-align:center;color:#ef4444;font-size:16px'>↓</div>",
+                                    unsafe_allow_html=True)
+                        st.caption(f"-{prev-v}")
+                    else:
+                        st.markdown("<div style='text-align:center;color:#5a6480;font-size:16px'>—</div>",
+                                    unsafe_allow_html=True)
+                        st.caption("stable")
+                    prev = v
+
             blocks[i]["hc_ramp"] = new_ramp if new_ramp else {}
 
             # Ramp preview chart
             if has_ramp or new_ramp:
                 try:
                     import plotly.graph_objects as _rgo
-                    ramp_hcs = [int(new_ramp.get(m, new_hc)) for m in MONTHS]
+                    ramp_hcs = ramp_vals  # already computed above
+                    # Colour: green = above base, red = below base, grey = zero
+                    bar_colors = []
+                    for v in ramp_hcs:
+                        if v == 0:           bar_colors.append("#374151")  # dark grey = no billing
+                        elif v > new_hc:     bar_colors.append("#10b981")  # green = ramp-up
+                        elif v < new_hc:     bar_colors.append("#ef4444")  # red = ramp-down
+                        else:                bar_colors.append("#3b82f6")  # blue = stable base
                     fig_ramp = _rgo.Figure()
                     fig_ramp.add_trace(_rgo.Bar(
                         x=MONTHS, y=ramp_hcs,
-                        marker_color=["#3b82f6" if v == new_hc else "#f59e0b" for v in ramp_hcs],
+                        marker_color=bar_colors,
                         text=ramp_hcs, textposition="outside", textfont=dict(size=9),
                     ))
                     fig_ramp.add_hline(y=new_hc, line_dash="dot", line_color="#5a6480",
@@ -1255,12 +1322,28 @@ for i, b in enumerate(blocks):
                         showlegend=False,
                     )
                     st.plotly_chart(fig_ramp, use_container_width=True)
+
+                    # Rampdown impact summary
+                    zero_months = [m for m, v in zip(MONTHS, ramp_hcs) if v == 0]
+                    down_months = [m for m, v in zip(MONTHS, ramp_hcs) if 0 < v < new_hc]
+                    if zero_months:
+                        st.markdown(
+                            f"<div style='background:#1e2535;border:1px solid #ef444433;"
+                            f"border-radius:5px;padding:8px 14px;font-size:12px;color:#8b96b0'>"
+                            f"⛔ <b style='color:#ef4444'>No billing months:</b> {', '.join(zero_months)} — "
+                            f"HC = 0, revenue = €0, cost = €0 for these months.</div>",
+                            unsafe_allow_html=True
+                        )
+                    if down_months:
+                        st.markdown(
+                            f"<div style='background:#1e2535;border:1px solid #f59e0b33;"
+                            f"border-radius:5px;padding:8px 14px;font-size:12px;color:#8b96b0;margin-top:4px'>"
+                            f"📉 <b style='color:#f59e0b'>Partial months:</b> {', '.join(down_months)} — "
+                            f"revenue and cost scale proportionally to the reduced HC.</div>",
+                            unsafe_allow_html=True
+                        )
                 except ImportError:
                     pass
-
-            if st.button("🔄 Reset ramp to flat", key=f"ramp_reset_{active}_{i}"):
-                blocks[i]["hc_ramp"] = {}
-                st.rerun()
 
 if blocks_to_delete:
     for idx in sorted(blocks_to_delete, reverse=True):
