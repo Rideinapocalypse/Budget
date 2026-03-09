@@ -164,11 +164,19 @@ def get_totals(month, g):
         hours  = b["hours_override"]  if b.get("hours_override")  is not None else g["hours"]
         hc      = effective_hc(month, b)              # ramp-adjusted HC
         sal     = b.get("salary", 0)
-        base_up = b.get("unit_price", 0)
-        up      = effective_up(month, blk_i, base_up)  # COLA-adjusted UP
+        base_up = b.get("unit_price", 0)   # always stored in EUR
+        up      = effective_up(month, blk_i, base_up)  # COLA-adjusted UP (EUR)
+        # If block billed in USD, revenue path: USD × usd_try = TRY, then ÷ eur_try = EUR
+        up_currency = b.get("up_currency", "EUR")
         eff          = hours * (1 - shrink)
-        rev_eur      = hc * eff * up
-        rev_try      = rev_eur * fx
+        if up_currency == "USD":
+            up_raw   = b.get("unit_price_raw", up)   # raw USD value
+            up_eur_via_usd = up_raw * (g.get("usd_try", g["fx"]) / g["fx"]) if g["fx"] else up_raw
+            rev_eur  = hc * eff * up_eur_via_usd
+            rev_try  = hc * eff * up_raw * g.get("usd_try", g["fx"])
+        else:
+            rev_eur  = hc * eff * up
+            rev_try  = rev_eur * fx
         cost_try     = hc * sal * g["ctc"] * (1 + g["bonus_pct"]) + hc * g["meal"]
         cost_eur     = cost_try / fx if fx else 0
         total_rev_eur  += rev_eur;  total_rev_try  += rev_try
@@ -971,7 +979,8 @@ with st.sidebar:
 
     usd_eur = round(live_usd_try / live_fx, 6) if live_fx else 0.92
     g = dict(hours=g_hours, shrink=g_shrink, fx=g_fx,
-             ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal, usd_eur=usd_eur)
+             ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal,
+             usd_eur=usd_eur, usd_try=live_usd_try)
 
     # Expose key globals to session_state so the Staffing Calculator page can read them
     st.session_state["g_hours"]  = g_hours
@@ -1329,7 +1338,9 @@ for i, b in enumerate(blocks):
         shr_raw = r2c1.text_input(f"Shrinkage Override % (global: {g_shrink*100:.0f}%)",
                                    value=_shr_display,
                                    key=f"shr_{active}_{i}", placeholder="blank = global")
-        fx_raw  = r2c2.text_input(f"FX Override (global: {g_fx})",
+        _fx_baseline = g.get("usd_try", g_fx) if up_currency == "USD" else g_fx
+        _fx_label    = f"FX Override (USD/TRY global: {_fx_baseline})" if up_currency == "USD" else f"FX Override (EUR/TRY global: {g_fx})"
+        fx_raw  = r2c2.text_input(_fx_label,
                                    value="" if b.get("fx_override") is None else str(b["fx_override"]),
                                    key=f"fx_{active}_{i}", placeholder="blank = global")
         hr_raw  = r2c3.text_input(f"Hours Override (global: {g_hours})",
