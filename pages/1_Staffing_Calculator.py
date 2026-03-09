@@ -256,7 +256,7 @@ if work_type == "Claims / Back-office":
 # ═══════════════════════════════════════════════════════════════
 elif work_type == "Inbound Voice (Erlang-C)":
     st.markdown("### Inbound Voice (Erlang-C) — Monthly Schedule")
-    st.info("Erlang-C works best at 15-30 min intervals. Monthly inputs are a planning approximation — treat as a floor.", icon="i")
+    st.info("Erlang-C works best at 15-30 min intervals. Monthly inputs are a planning approximation — treat as a floor.")
     vc1,vc2 = st.columns(2)
     v_shrink = vc1.slider("Default shrinkage %", 0, 40, global_shrink, 1, format="%d%%", key="voice_def_shrink")
     v_max    = vc2.number_input("Max agents (solver ceiling)", value=100, step=10, min_value=10, key="voice_def_max")
@@ -412,3 +412,4 @@ elif work_type == "Blended":
 
 st.divider()
 st.caption(f"Models: Productivity (Claims, Email, Blended) = volume / adjusted capacity. Erlang-C (Voice) = queueing theory. Worked hours: {global_hours}h/month from budget settings.")
+
