@@ -214,6 +214,13 @@ if work_type == "Claims / Back-office":
     eff_prod_default  = def_prod if def_prod > 0 else auto_prod_default
     st.caption(f"ℹ️ Default prod/hr: **{eff_prod_default:.1f}** "
                f"({'manual override' if def_prod > 0 else f'auto from {def_aht} min AHT'})")
+    if st.button("⬇ Apply defaults to all months", key="claims_apply_defaults", type="secondary"):
+        for m in MONTHS:
+            st.session_state[f"claims_{m}_vol"]  = int(def_vol)
+            st.session_state[f"claims_{m}_aht"]  = int(def_aht)
+            st.session_state[f"claims_{m}_prod"] = int(def_prod)
+            st.session_state[f"claims_{m}_shr"]  = int(def_shr)
+        st.rerun()
     st.divider()
     hcols = st.columns([1.0, 1.4, 1.2, 1.2, 1.0, 1.2, 1.0, 1.0])
     for col, lbl in zip(hcols, ["Month","Volume","AHT(min)","Prod/hr","Override","Shrink%","Prod.HC","Rostered"]):
@@ -261,6 +268,13 @@ elif work_type == "Inbound Voice (Erlang-C)":
     def_aht_v = d2.number_input("Default AHT (s)",  value=240, step=10, min_value=10, key="voice_def_aht")
     def_sl_v  = d3.number_input("Default SL %", value=80, step=1, min_value=1, max_value=99, key="voice_def_sl")
     def_sls_v = d4.number_input("Answer within (s)", value=20, step=5, min_value=1, key="voice_def_sls")
+    if st.button("⬇ Apply defaults to all months", key="voice_apply_defaults", type="secondary"):
+        for m in MONTHS:
+            st.session_state[f"voice_{m}_vol"] = int(def_vol_v)
+            st.session_state[f"voice_{m}_aht"] = int(def_aht_v)
+            st.session_state[f"voice_{m}_sl"]  = int(def_sl_v)
+            st.session_state[f"voice_{m}_shr"] = int(v_shrink)
+        st.rerun()
     st.divider()
     hcols = st.columns([1.2,1.4,1.4,1.2,1.2,1.2,1.2,1.2])
     for col, lbl in zip(hcols, ["Month","Calls/hr","AHT(s)","SL%","Shrink%","Prod.HC","Rostered","ASA"]):
@@ -306,6 +320,13 @@ elif work_type == "Email / Async":
     eff_epd_default  = def_epd_e if def_epd_e > 0 else auto_epd_default
     st.caption(f"ℹ️ Default emails/day: **{eff_epd_default}** "
                f"({'manual override' if def_epd_e > 0 else f'auto from {def_aht_e} min AHT x {work_hrs_day}h day'})")
+    if st.button("⬇ Apply defaults to all months", key="email_apply_defaults", type="secondary"):
+        for m in MONTHS:
+            st.session_state[f"email_{m}_vol"] = int(def_vol_e)
+            st.session_state[f"email_{m}_aht"] = int(def_aht_e)
+            st.session_state[f"email_{m}_epd"] = int(def_epd_e)
+            st.session_state[f"email_{m}_shr"] = int(def_shrk_e)
+        st.rerun()
     st.divider()
     st.markdown("<div class='sched-hdr'>Monthly Forecast Schedule</div>", unsafe_allow_html=True)
     hcols = st.columns([1.0,1.4,1.2,1.2,1.0,1.2,1.0,1.0])
@@ -360,6 +381,11 @@ elif work_type == "Blended":
     st.divider()
     st.markdown("<div class='sched-hdr'>Monthly Forecast Schedule</div>", unsafe_allow_html=True)
     def_vol_b = st.number_input("Default monthly volume (total)", value=5000, step=100, min_value=0, key="blend_def_vol")
+    if st.button("⬇ Apply defaults to all months", key="blend_apply_defaults", type="secondary"):
+        for m in MONTHS:
+            st.session_state[f"blend_{m}_vol"] = int(def_vol_b)
+            st.session_state[f"blend_{m}_shr"] = int(b_shrink)
+        st.rerun()
     st.divider()
     hcols = st.columns([1.2,1.8,1.2,1.2,1.2])
     for col, lbl in zip(hcols, ["Month","Total Volume","Shrink%","Prod.HC","Rostered"]):
