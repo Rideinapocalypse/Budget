@@ -968,6 +968,11 @@ with st.sidebar:
     g = dict(hours=g_hours, shrink=g_shrink, fx=g_fx,
              ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal)
 
+    # Expose key globals to session_state so the Staffing Calculator page can read them
+    st.session_state["g_hours"]  = g_hours
+    st.session_state["g_shrink"] = g_shrink
+    st.session_state["g_fx"]     = g_fx
+
     st.divider()
     st.markdown('<div class="section-title">Data Import / Export</div>', unsafe_allow_html=True)
 
