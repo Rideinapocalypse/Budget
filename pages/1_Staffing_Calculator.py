@@ -193,34 +193,48 @@ st.divider()
 # ═══════════════════════════════════════════════════════════════
 if work_type == "Claims / Back-office":
     st.markdown("### Claims / Back-office — Monthly Schedule")
-    st.caption(f"Model: Rostered HC = (Volume / (prod/hr x {global_hours}h)) / (1 - shrinkage). Worked hours from budget: {global_hours}h/month.")
+    st.caption(f"Model: Rostered HC = (Volume / (prod/hr x {global_hours}h)) / (1 - shrinkage). "
+               f"AHT (mins) auto-calculates prod/hr — override per month if needed.")
     rc1, rc2 = st.columns(2)
     ramp_eff = rc1.slider("New hire ramp efficiency %", 10, 100, 70, 5, format="%d%%", key="claims_ramp_eff")
     ramp_mo  = rc2.number_input("Ramp-up months", value=2, step=1, min_value=0, max_value=6, key="claims_ramp_mo")
     st.divider()
     st.markdown("<div class='sched-hdr'>Monthly Forecast Schedule</div>", unsafe_allow_html=True)
-    st.caption("Set defaults. Override individual months as needed. Volume = 0 excludes that month.")
-    d1,d2,d3 = st.columns(3)
-    def_vol  = d1.number_input("Default volume", value=5000, step=100, min_value=0, key="claims_def_vol")
-    def_prod = d2.number_input("Default prod/hr", value=5, step=1, min_value=1, key="claims_def_prod")
-    def_shr  = d3.slider("Default shrinkage %", 0, 40, global_shrink, 1, format="%d%%", key="claims_def_shr")
+    st.caption("AHT drives prod/hr automatically (60 / AHT mins). Override prod/hr per month if you have a better estimate.")
+    d1,d2,d3,d4 = st.columns(4)
+    def_vol  = d1.number_input("Default volume",    value=5000, step=100, min_value=0,   key="claims_def_vol")
+    def_aht  = d2.number_input("Default AHT (mins)",value=12,   step=1,   min_value=1,   key="claims_def_aht",
+                                 help="Average Handle Time in minutes. Sets prod/hr = 60 / AHT automatically.")
+    def_prod = d3.number_input("Default prod/hr override (0 = auto from AHT)", value=0, step=1, min_value=0,
+                                key="claims_def_prod",
+                                help="Leave at 0 to use AHT-derived rate. Enter a value to override.")
+    def_shr  = d4.slider("Default shrinkage %", 0, 40, global_shrink, 1, format="%d%%", key="claims_def_shr")
+    # Show derived default prod/hr
+    auto_prod_default = round(60 / def_aht, 2) if def_aht > 0 else 5
+    eff_prod_default  = def_prod if def_prod > 0 else auto_prod_default
+    st.caption(f"ℹ️ Default prod/hr: **{eff_prod_default:.1f}** "
+               f"({'manual override' if def_prod > 0 else f'auto from {def_aht} min AHT'})")
     st.divider()
-    hcols = st.columns([1.2, 1.8, 1.5, 1.2, 1.2, 1.2])
-    for col, lbl in zip(hcols, ["Month","Volume","Prod/hr","Shrink %","Prod.HC","Rostered"]):
+    hcols = st.columns([1.0, 1.4, 1.2, 1.2, 1.0, 1.2, 1.0, 1.0])
+    for col, lbl in zip(hcols, ["Month","Volume","AHT(min)","Prod/hr","Override","Shrink%","Prod.HC","Rostered"]):
         col.markdown(f"**{lbl}**")
     schedule = []
     for m in MONTHS:
-        c_m,c_v,c_p,c_sh,c_ph,c_rh = st.columns([1.2,1.8,1.5,1.2,1.2,1.2])
+        c_m,c_v,c_a,c_ap,c_ov,c_sh,c_ph,c_rh = st.columns([1.0,1.4,1.2,1.2,1.0,1.2,1.0,1.0])
         c_m.markdown(f"**{m}**")
-        vol  = c_v.number_input("", value=int(def_vol),  step=100, min_value=0, key=f"claims_{m}_vol",  label_visibility="collapsed")
-        prod = c_p.number_input("", value=int(def_prod), step=1,   min_value=1, key=f"claims_{m}_prod", label_visibility="collapsed")
-        shr  = c_sh.number_input("", value=int(def_shr), step=1,   min_value=0, max_value=40, key=f"claims_{m}_shr", label_visibility="collapsed")
-        monthly_cap = prod * global_hours
+        vol  = c_v.number_input("",  value=int(def_vol),  step=100, min_value=0,  key=f"claims_{m}_vol",  label_visibility="collapsed")
+        aht  = c_a.number_input("",  value=int(def_aht),  step=1,   min_value=1,  key=f"claims_{m}_aht",  label_visibility="collapsed")
+        auto_prod = round(60 / aht, 2) if aht > 0 else 5
+        c_ap.markdown(f"<span style='color:#10b981;font-size:13px'>{auto_prod:.1f}</span>", unsafe_allow_html=True)
+        override = c_ov.number_input("", value=int(def_prod), step=1, min_value=0, key=f"claims_{m}_prod", label_visibility="collapsed")
+        shr  = c_sh.number_input("", value=int(def_shr),  step=1,   min_value=0, max_value=40, key=f"claims_{m}_shr",  label_visibility="collapsed")
+        eff_prod    = override if override > 0 else auto_prod
+        monthly_cap = eff_prod * global_hours
         prod_hc = vol / monthly_cap if monthly_cap > 0 and vol > 0 else 0
         ros = math.ceil(rostered_hc(prod_hc, shr)) if vol > 0 else 0
         c_ph.markdown(f"{'—' if vol==0 else f'{prod_hc:.1f}'}")
         c_rh.markdown(f"**{'—' if vol==0 else ros}**")
-        schedule.append({"month":m,"volume":vol,"prod_hr":prod,"shrink_pct":shr,"productive_hc":prod_hc,"rostered_hc":ros})
+        schedule.append({"month":m,"volume":vol,"aht_mins":aht,"prod_hr":eff_prod,"shrink_pct":shr,"productive_hc":prod_hc,"rostered_hc":ros})
     st.divider()
     full_year_summary(schedule)
     active = [r for r in schedule if r["volume"] > 0]
@@ -277,31 +291,43 @@ elif work_type == "Inbound Voice (Erlang-C)":
 # ═══════════════════════════════════════════════════════════════
 elif work_type == "Email / Async":
     st.markdown("### Email / Async — Monthly Schedule")
-    st.caption("Model: Rostered HC = (Monthly volume / (emails/day x working days)) / (1 - shrinkage).")
-    ec1,ec2 = st.columns(2)
-    work_days = ec1.number_input("Working days / month", value=22, step=1, min_value=1, key="email_work_days")
-    d1,d2,d3 = st.columns(3)
-    def_vol_e  = d1.number_input("Default monthly volume", value=3000, step=100, min_value=0, key="email_def_vol")
-    def_epd_e  = d2.number_input("Default emails/agent/day", value=30, step=1, min_value=1, key="email_def_epd")
-    def_shrk_e = d3.slider("Default shrinkage %", 0, 40, global_shrink, 1, format="%d%%", key="email_def_shrink")
+    st.caption("Model: Rostered HC = (Monthly volume / (emails/day x working days)) / (1 - shrinkage). "
+               "AHT (mins) auto-derives emails/day — override per month if needed.")
+    work_days = st.number_input("Working days / month", value=22, step=1, min_value=1, key="email_work_days")
+    d1,d2,d3,d4 = st.columns(4)
+    def_vol_e  = d1.number_input("Default monthly volume",   value=3000, step=100, min_value=0, key="email_def_vol")
+    def_aht_e  = d2.number_input("Default AHT (mins)",       value=8,    step=1,   min_value=1, key="email_def_aht",
+                                   help="Average time per email including reading and writing. Sets emails/day = work_hours_per_day x 60 / AHT.")
+    def_epd_e  = d3.number_input("Default emails/day override (0 = auto)", value=0, step=1, min_value=0,
+                                   key="email_def_epd", help="Leave 0 to use AHT-derived rate.")
+    def_shrk_e = d4.slider("Default shrinkage %", 0, 40, global_shrink, 1, format="%d%%", key="email_def_shrink")
+    work_hrs_day = 8  # standard working hours per day
+    auto_epd_default = round(work_hrs_day * 60 / def_aht_e) if def_aht_e > 0 else 30
+    eff_epd_default  = def_epd_e if def_epd_e > 0 else auto_epd_default
+    st.caption(f"ℹ️ Default emails/day: **{eff_epd_default}** "
+               f"({'manual override' if def_epd_e > 0 else f'auto from {def_aht_e} min AHT x {work_hrs_day}h day'})")
     st.divider()
     st.markdown("<div class='sched-hdr'>Monthly Forecast Schedule</div>", unsafe_allow_html=True)
-    hcols = st.columns([1.2,1.6,1.6,1.2,1.2,1.2])
-    for col, lbl in zip(hcols, ["Month","Volume","Emails/day","Shrink%","Prod.HC","Rostered"]):
+    hcols = st.columns([1.0,1.4,1.2,1.2,1.0,1.2,1.0,1.0])
+    for col, lbl in zip(hcols, ["Month","Volume","AHT(min)","Emails/day","Override","Shrink%","Prod.HC","Rostered"]):
         col.markdown(f"**{lbl}**")
     e_schedule = []
     for m in MONTHS:
-        c_m,c_v,c_e,c_sh,c_ph,c_rh = st.columns([1.2,1.6,1.6,1.2,1.2,1.2])
+        c_m,c_v,c_a,c_ae,c_ov,c_sh,c_ph,c_rh = st.columns([1.0,1.4,1.2,1.2,1.0,1.2,1.0,1.0])
         c_m.markdown(f"**{m}**")
-        vol = c_v.number_input("",  value=int(def_vol_e),  step=100, min_value=0, key=f"email_{m}_vol", label_visibility="collapsed")
-        epd = c_e.number_input("",  value=int(def_epd_e),  step=1,   min_value=1, key=f"email_{m}_epd", label_visibility="collapsed")
-        shr = c_sh.number_input("", value=int(def_shrk_e), step=1,   min_value=0, max_value=40, key=f"email_{m}_shr", label_visibility="collapsed")
-        monthly_cap = epd * work_days
+        vol = c_v.number_input("",  value=int(def_vol_e),  step=100, min_value=0,  key=f"email_{m}_vol", label_visibility="collapsed")
+        aht = c_a.number_input("",  value=int(def_aht_e),  step=1,   min_value=1,  key=f"email_{m}_aht", label_visibility="collapsed")
+        auto_epd = round(work_hrs_day * 60 / aht) if aht > 0 else 30
+        c_ae.markdown(f"<span style='color:#10b981;font-size:13px'>{auto_epd}</span>", unsafe_allow_html=True)
+        override = c_ov.number_input("", value=int(def_epd_e), step=1, min_value=0, key=f"email_{m}_epd", label_visibility="collapsed")
+        shr = c_sh.number_input("",  value=int(def_shrk_e), step=1,   min_value=0, max_value=40, key=f"email_{m}_shr", label_visibility="collapsed")
+        eff_epd = override if override > 0 else auto_epd
+        monthly_cap = eff_epd * work_days
         prod_hc = vol / monthly_cap if monthly_cap > 0 and vol > 0 else 0
         ros = math.ceil(rostered_hc(prod_hc, shr)) if vol > 0 else 0
         c_ph.markdown(f"{'—' if vol==0 else f'{prod_hc:.1f}'}")
         c_rh.markdown(f"**{'—' if vol==0 else ros}**")
-        e_schedule.append({"month":m,"volume":vol,"emails_per_day":epd,"shrink_pct":shr,"productive_hc":prod_hc,"rostered_hc":ros})
+        e_schedule.append({"month":m,"volume":vol,"aht_mins":aht,"emails_per_day":eff_epd,"shrink_pct":shr,"productive_hc":prod_hc,"rostered_hc":ros})
     st.divider()
     full_year_summary(e_schedule)
     push_all_months_ui(e_schedule, "email")
@@ -319,11 +345,16 @@ elif work_type == "Blended":
     type_opts = ["Claims / Back-office", "Email / Async", "Outbound", "Other"]
     wt_defs = []; total_split = 0
     for t in range(int(n_types)):
-        tc1,tc2,tc3 = st.columns(3)
+        tc1,tc2,tc3,tc4 = st.columns(4)
         wname = tc1.selectbox(f"Type {t+1}", type_opts, key=f"blend_wname_{t}")
-        wprod = tc2.number_input(f"Prod/hr (type {t+1})", value=5, step=1, min_value=1, key=f"blend_wprod_{t}")
-        wspl  = tc3.number_input(f"Time split % (type {t+1})", value=int(100//n_types), step=5, min_value=1, max_value=100, key=f"blend_wspl_{t}")
-        wt_defs.append({"name":wname,"prod_hr":wprod,"split":wspl}); total_split += wspl
+        waht  = tc2.number_input(f"AHT mins (type {t+1})", value=12, step=1, min_value=1, key=f"blend_waht_{t}",
+                                  help="Auto-derives prod/hr = 60 / AHT. Override below if needed.")
+        auto_wprod = round(60 / waht, 2) if waht > 0 else 5
+        wprod_ov = tc3.number_input(f"Prod/hr override (0=auto) type {t+1}", value=0, step=1, min_value=0, key=f"blend_wprod_{t}")
+        wprod = wprod_ov if wprod_ov > 0 else auto_wprod
+        tc3.caption(f"Using: {wprod:.1f}/hr")
+        wspl  = tc4.number_input(f"Time split % (type {t+1})", value=int(100//n_types), step=5, min_value=1, max_value=100, key=f"blend_wspl_{t}")
+        wt_defs.append({"name":wname,"aht_mins":waht,"prod_hr":wprod,"split":wspl}); total_split += wspl
     if abs(total_split - 100) > 1:
         st.warning(f"Time splits sum to {total_split}% — should equal 100%.")
     st.divider()
