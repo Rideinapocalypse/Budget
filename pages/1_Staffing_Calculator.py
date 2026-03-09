@@ -200,59 +200,71 @@ if work_type == "📋 Claims / Back-office":
     st.markdown("### 📋 Claims / Back-office Sizing")
     st.caption(
         "Best for: claims processing, back-office tasks, document handling, quality review. "
-        "Model: Required HC = Monthly volume ÷ productivity per agent."
+        "Model: Required HC = Monthly volume ÷ (productivity per hour × worked hours per month)."
     )
+
+    # Pull worked hours from main budget session state, fallback to 180
+    global_hours = st.session_state.get("g_hours", 180)
 
     c1, c2, c3 = st.columns(3)
     monthly_volume  = c1.number_input("Monthly work volume (units)", value=5000, step=100, min_value=1,
                                        help="Total claims, tickets, documents, etc. to process per month.")
-    productivity    = c2.number_input("Productivity per agent / month (units)", value=400, step=10, min_value=1,
-                                       help="How many units one fully productive agent completes per month.")
+    productivity_hr = c2.number_input("Productivity per agent / hour (units)", value=5, step=1, min_value=1,
+                                       help="How many units one fully productive agent completes per hour.")
     shrink_pct      = c3.slider("Shrinkage %", 0, 40, 15, 1, format="%d%%",
                                  help="Breaks, sick leave, training, meetings. Productive HC ÷ (1 - shrinkage) = rostered HC.")
 
-    c4, c5 = st.columns(2)
+    c4, c5, c6 = st.columns(3)
     new_hire_ramp   = c4.slider("New hire ramp efficiency %", 10, 100, 70, 5, format="%d%%",
                                  help="If agents are new, they produce less than 100%. Adjusts effective productivity.")
     ramp_months     = c5.number_input("Ramp-up duration (months)", value=2, step=1, min_value=0, max_value=6,
                                        help="How many months the ramp efficiency applies. After this, full productivity.")
+    worked_hours    = c6.number_input("Worked hours / agent / month", value=int(global_hours), step=5, min_value=1,
+                                       help=f"Auto-filled from your budget global settings ({global_hours}h). Edit if needed.")
 
-    # Calculation
-    eff_productivity = productivity * (new_hire_ramp / 100)
-    productive_hc_raw = monthly_volume / productivity
+    # Calculation — per hour basis
+    productivity_month = productivity_hr * worked_hours
+    eff_productivity   = productivity_month * (new_hire_ramp / 100)
+    productive_hc_raw  = monthly_volume / productivity_month
     productive_hc_ramp = monthly_volume / eff_productivity if ramp_months > 0 else productive_hc_raw
-    rostered = rostered_hc(productive_hc_raw, shrink_pct)
+    rostered      = rostered_hc(productive_hc_raw, shrink_pct)
     rostered_ramp = rostered_hc(productive_hc_ramp, shrink_pct)
-    occ = occupancy(productive_hc_raw, monthly_volume / (productivity * 160 / 160))
+    util = monthly_volume / (max(1, math.ceil(rostered)) * productivity_month) * 100
 
     st.divider()
     st.markdown("#### Results")
 
+    st.caption(
+        f"ℹ️ Worked hours from budget: **{global_hours}h/month** · "
+        f"Monthly capacity per agent: **{productivity_month:,.0f} units** "
+        f"({productivity_hr} units/hr × {worked_hours}h)"
+    )
+
     results_row([
-        ("Productive HC needed", f"{productive_hc_raw:.1f}", f"{monthly_volume:,} ÷ {productivity} units/agent"),
-        ("Rostered HC (after shrinkage)", f"{math.ceil(rostered)}", f"{productive_hc_raw:.1f} ÷ (1 − {shrink_pct}%)"),
-        ("During ramp-up period", f"{math.ceil(rostered_ramp)}", f"At {new_hire_ramp}% efficiency × {ramp_months}mo"),
-        ("Utilisation", f"{min(100, monthly_volume / (math.ceil(rostered) * productivity) * 100):.1f}%",
-         "Actual work ÷ capacity"),
+        ("Productive HC needed", f"{productive_hc_raw:.1f}",
+         f"{monthly_volume:,} ÷ {productivity_month:,.0f} units/agent/mo"),
+        ("Rostered HC (after shrinkage)", f"{math.ceil(rostered)}",
+         f"{productive_hc_raw:.1f} ÷ (1 − {shrink_pct}%)"),
+        ("During ramp-up period", f"{math.ceil(rostered_ramp)}",
+         f"At {new_hire_ramp}% efficiency × {ramp_months}mo"),
+        ("Utilisation", f"{min(100, util):.1f}%", "Actual work ÷ capacity"),
     ])
 
-    # Occupancy status
-    util = monthly_volume / (math.ceil(rostered) * productivity) * 100
     box_type, msg = occ_status(min(util * 0.85, 99))
     st.markdown(f"<div class='{box_type}-box'>{msg}</div>", unsafe_allow_html=True)
 
-    # Sensitivity table
-    with st.expander("📊 Sensitivity — how rostered HC changes with volume", expanded=False):
+    with st.expander("📊 Sensitivity — rostered HC vs monthly volume", expanded=False):
         try:
             import plotly.graph_objects as go
             volumes = [int(monthly_volume * x / 100) for x in range(50, 201, 10)]
-            hcs = [math.ceil(rostered_hc(v / productivity, shrink_pct)) for v in volumes]
+            hcs = [math.ceil(rostered_hc(v / productivity_month, shrink_pct)) for v in volumes]
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=volumes, y=hcs, mode="lines+markers",
                 line=dict(color="#3b82f6", width=2.5), marker=dict(size=5),
                 hovertemplate="Volume: %{x:,}<br>HC needed: %{y}<extra></extra>"))
             fig.add_vline(x=monthly_volume, line_dash="dot", line_color="#f59e0b",
-                          annotation_text=f"Current: {monthly_volume:,}", annotation_font_color="#f59e0b")
+                          annotation_text=f"Current: {monthly_volume:,}",
+                          annotation_font_color="#f59e0b")
             fig.update_layout(
                 plot_bgcolor="#0e1420", paper_bgcolor="#0e1420",
                 font=dict(color="#8b96b0"), height=260,
@@ -589,4 +601,3 @@ st.caption(
     "Erlang-C (Voice) = queueing theory for Poisson arrivals, assumes no abandonments. "
     "All HC outputs are planning approximations — validate against actual interval data."
 )
-
