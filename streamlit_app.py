@@ -105,9 +105,11 @@ def fetch_live_fx():
         url = "https://open.er-api.com/v6/latest/EUR"
         with urllib.request.urlopen(url, timeout=5) as r:
             data = json.loads(r.read())
-        return round(data["rates"]["TRY"], 2), True
+        eur_try = round(data["rates"]["TRY"], 2)
+        usd_try = round(data["rates"]["TRY"] / data["rates"]["USD"], 2)
+        return eur_try, usd_try, True
     except Exception:
-        return 38.0, False
+        return 38.0, 35.0, False
 
 def fmt_eur(v): return f"€{v:,.0f}"
 def fmt_try(v): return f"₺{v:,.0f}"
@@ -895,12 +897,14 @@ with st.sidebar:
     g_hours  = st.number_input("Worked Hours / Agent / Month", value=180, step=1, min_value=1)
     g_shrink = st.slider("Shrinkage % (default)", 0.0, 0.5, 0.15, 0.01, format="%.0f%%")
 
-    live_fx, fx_ok = fetch_live_fx()
+    live_fx, live_usd_try, fx_ok = fetch_live_fx()
     if fx_ok:
-        st.caption(f"🟢 Live EUR/TRY: **{live_fx}** (auto-fetched, editable below)")
+        st.caption(f"🟢 Live EUR/TRY: **{live_fx}**  |  USD/TRY: **{live_usd_try}** (auto-fetched, editable below)")
     else:
-        st.caption("🔴 Could not fetch live rate — using fallback")
+        st.caption("🔴 Could not fetch live rates — using fallback values")
     g_fx = st.number_input("FX Rate (1 EUR = TRY)", value=live_fx, step=0.5, min_value=0.1)
+    st.number_input("USD/TRY (reference only)", value=live_usd_try, step=0.5, min_value=0.1,
+                    disabled=True, help="Live USD/TRY for reference. Budget calculations use EUR/TRY above.")
 
     st.divider()
     st.markdown('<div class="section-title">Global Cost Drivers</div>', unsafe_allow_html=True)
@@ -965,8 +969,9 @@ with st.sidebar:
         client().setdefault("opex",{}).update({
             "capex_pc": capex_pc, "capex_headset": capex_hs, "capex_software": capex_sw})
 
+    usd_eur = round(live_usd_try / live_fx, 6) if live_fx else 0.92
     g = dict(hours=g_hours, shrink=g_shrink, fx=g_fx,
-             ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal)
+             ctc=g_ctc, bonus_pct=g_bonus_pct, meal=g_meal, usd_eur=usd_eur)
 
     # Expose key globals to session_state so the Staffing Calculator page can read them
     st.session_state["g_hours"]  = g_hours
@@ -1287,15 +1292,25 @@ for i, b in enumerate(blocks):
             st.warning("⚠️ HC is 0 — this block contributes no revenue or cost.", icon="⚠️")
         if salary == 0 and hc > 0:
             st.warning("⚠️ Base salary is 0 — cost will be understated.", icon="⚠️")
-        r1c1,r1c2,r1c3,r1c4,r1c5 = st.columns([2,1,2,2,1])
+        r1c1,r1c2,r1c3,r1c4,r1c4b,r1c5 = st.columns([2,1,2,1,2,1])
         new_lang = r1c1.text_input("Language / Label", value=b.get("lang",""),
                                     key=f"lang_{active}_{i}", placeholder="e.g. DE, EN, TR")
         new_hc   = r1c2.number_input("HC", value=int(b.get("hc",0)), min_value=0, step=1,
                                       key=f"hc_{active}_{i}")
         new_sal  = r1c3.number_input("Base Salary (TRY/mo)", value=float(b.get("salary",0)),
                                       min_value=0.0, step=100.0, key=f"sal_{active}_{i}")
-        new_up   = r1c4.number_input("Unit Price (EUR/hr)", value=float(b.get("unit_price",0)),
-                                      min_value=0.0, step=0.1, key=f"up_{active}_{i}")
+        up_currency = r1c4.radio("Currency", ["EUR","USD"],
+                                  index=0 if b.get("up_currency","EUR")=="EUR" else 1,
+                                  key=f"upcur_{active}_{i}", horizontal=True,
+                                  help="USD prices are converted to EUR using the live cross rate for all P&L calculations.")
+        _up_label = "Unit Price (EUR/hr)" if up_currency == "EUR" else f"Unit Price (USD/hr → EUR)"
+        new_up_raw = r1c4b.number_input(_up_label, value=float(b.get("unit_price_raw", b.get("unit_price",0))),
+                                         min_value=0.0, step=0.1, key=f"up_{active}_{i}")
+        # Convert to EUR for all calculations
+        _usd_eur = g.get("usd_eur", 0.92)
+        new_up = new_up_raw * _usd_eur if up_currency == "USD" else new_up_raw
+        if up_currency == "USD" and new_up_raw > 0:
+            r1c4b.caption(f"≈ €{new_up:.2f}/hr")
         if r1c5.button("🗑 Remove", key=f"del_{active}_{i}", use_container_width=True):
             blocks_to_delete.append(i)
 
@@ -1393,7 +1408,10 @@ for i, b in enumerate(blocks):
         )
 
         blocks[i].update({
-            "lang": new_lang, "hc": new_hc, "salary": new_sal, "unit_price": new_up,
+            "lang": new_lang, "hc": new_hc, "salary": new_sal,
+            "unit_price": new_up,          # always EUR for calculations
+            "unit_price_raw": new_up_raw,  # raw value as entered (USD or EUR)
+            "up_currency": up_currency,
             "shrink_override":    (float(shr_raw)/100 if float(shr_raw) > 1 else float(shr_raw)) if shr_raw.strip() else None,
             "fx_override":        float(fx_raw)  if fx_raw.strip()  else None,
             "hours_override":     float(hr_raw)  if hr_raw.strip()  else None,
@@ -2016,7 +2034,7 @@ st.divider()
 st.markdown("### 💱 FX Rate Projection — EUR/TRY")
 st.caption("Model how TRY depreciation affects your full-year cost base. Uses live rate as anchor.")
 
-_live_fx, _fx_ok = fetch_live_fx()
+_live_fx, _live_usd_try, _fx_ok = fetch_live_fx()
 _fx_anchor = g["fx"]  # use the rate currently set in sidebar (may be manual)
 
 fxp_c1, fxp_c2, fxp_c3, fxp_c4 = st.columns(4)
