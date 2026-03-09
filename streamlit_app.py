@@ -2428,12 +2428,16 @@ st.markdown("### 📊 Performance Charts")
 try:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
+    _plotly_ok = True
+except ImportError:
+    _plotly_ok = False
 
+if not _plotly_ok:
+    st.info("Install plotly for charts: `pip install plotly`")
+elif not month_data or all(month_data[m]["hc"] == 0 for m in MONTHS):
+    st.info("Add production blocks to see charts.", icon="📊")
+else:
     chart_months = MONTHS
-    # Guard: month_data may be empty if no blocks configured
-    if not month_data or all(month_data[m]["hc"] == 0 for m in MONTHS):
-        st.info("Add production blocks to see charts.", icon="📊")
-        raise ImportError("no data")  # skip chart rendering gracefully
     revs   = [month_data[m]["rev"]    for m in chart_months]
     costs  = [month_data[m]["cost"]   for m in chart_months]
     gms    = [month_data[m]["margin"] for m in chart_months]
@@ -2577,9 +2581,6 @@ try:
             hoverlabel=dict(bgcolor="#1e2535", bordercolor="#2a3347"),
         )
         st.plotly_chart(fig_hc, use_container_width=True)
-
-except ImportError:
-    st.info("Install plotly for charts: `pip install plotly`")
 
 st.divider()
 
